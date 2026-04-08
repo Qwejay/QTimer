@@ -14,7 +14,7 @@ from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 from PyQt5.QtSvg import QSvgRenderer
 
-APP_NAME = "QTimer V1.0.0"
+APP_NAME = "QTimer V1.0.1"
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), f".{APP_NAME.lower()}_config.json")
 
 # ================================================================
@@ -309,6 +309,9 @@ class TimerController(QObject):
 # ================================================================
 #  浮动计时条 (视觉对称修复版)
 # ================================================================
+# ================================================================
+#  浮动计时条 (内部画布隔离版 - 彻底解决动画挤压重叠Bug)
+# ================================================================
 class FloatBar(QWidget):
     request_settings = pyqtSignal()
     request_exit = pyqtSignal()
@@ -327,6 +330,8 @@ class FloatBar(QWidget):
         self._font_family = "微软雅黑"
         self._font_size = 32
         self._bg_color = QColor(20, 20, 20, 210)
+        
+        self._current_stage_text = "环节名称"
         
         self._text_width = 150
         self._full_width = 300
@@ -360,10 +365,13 @@ class FloatBar(QWidget):
         self.setFixedWidth(w)
 
     def _build_ui(self):
-        self._layout = QHBoxLayout(self)
-        self._layout.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        # ⚠️ 核心修复方案：创建一个“底层画布”
+        # 我们把所有控件放在画布上，而不是直接放在窗口上。
+        self._canvas = QWidget(self)
+        self._canvas.move(0, 0)
         
-        # 精确数学计算保证绝对对称：左边距锁定为 18 像素
+        self._layout = QHBoxLayout(self._canvas)
+        self._layout.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self._layout.setContentsMargins(18, 0, 0, 0)
         self._layout.setSpacing(0)
 
@@ -374,9 +382,9 @@ class FloatBar(QWidget):
         self.lbl_time.setAlignment(Qt.AlignCenter)
 
         self._layout.addWidget(self.lbl_stage)
-        self._layout.addSpacing(12)  # 文字之间的间距
+        self._layout.addSpacing(12)
         self._layout.addWidget(self.lbl_time)
-        self._layout.addSpacing(18)  # 文字到按钮之间的间距 (将化身为折叠状态时的精准右留白)
+        self._layout.addSpacing(18)
 
         self._btn_container = QWidget()
         btn_lay = QHBoxLayout(self._btn_container)
@@ -429,36 +437,44 @@ class FloatBar(QWidget):
         sc = stage_color or self._text_color
         tc = time_color or self._text_color
         stage_size = max(13, int(self._font_size * 0.65))
+        
         self.lbl_stage.setStyleSheet(
             f"color:{sc}; font-family:'{self._font_family}'; "
             f"font-size:{stage_size}px; font-weight:600; background:transparent;")
+            
         self.lbl_time.setStyleSheet(
             f"color:{tc}; font-family:'{self._font_family}'; "
             f"font-size:{self._font_size}px; font-weight:900; background:transparent;")
+            
+        self.lbl_stage.style().polish(self.lbl_stage)
+        self.lbl_time.style().polish(self.lbl_time)
 
     def _update_size(self):
-        stage_size = max(13, int(self._font_size * 0.65))
-        fm_stage = QFontMetrics(QFont(self._font_family, stage_size, QFont.Bold))
-        fm_time = QFontMetrics(QFont(self._font_family, self._font_size, QFont.Black))
+        fm_stage = self.lbl_stage.fontMetrics()
+        fm_time = self.lbl_time.fontMetrics()
         
-        text = self.lbl_stage.text()
+        text = self._current_stage_text
         if not text or text == "环节名称": text = "说课时间"
         
-        stage_w = fm_stage.horizontalAdvance(text) + 4
-        time_w = fm_time.horizontalAdvance("00:00") + 4
+        stage_w = fm_stage.horizontalAdvance(text) + 16
+        time_w = fm_time.horizontalAdvance("88:88") + 16
         
+        self.lbl_stage.setText(text)
         self.lbl_stage.setFixedWidth(stage_w)
         self.lbl_time.setFixedWidth(time_w)
 
         btn_w = (self.ICON_SIZE + 2) * 6
         self._btn_container.setFixedWidth(btn_w)
 
-        # 绝对精准的视觉对称： 折叠宽度 = 左留白18 + 阶段字宽 + 字间距12 + 时间字宽 + 右留白18
         self._text_width = 18 + stage_w + 12 + time_w + 18
-        # 展开宽度 = 折叠宽度 + 按钮宽 + 展开后的右侧保护留白16
         self._full_width = self._text_width + btn_w + 16
 
         h = max(self._font_size + 20, 50)
+        
+        # ⚠️ 修复关键：我们将内部的画布（Canvas）永远锁死在“展开状态的最大宽度”！
+        # 这样一来，不管外层的窗口怎么因为动画缩小，布局引擎都绝对不会挤压内部控件。
+        self._canvas.setFixedSize(self._full_width, h)
+        
         self.setFixedHeight(h)
 
         if self.underMouse():
@@ -470,8 +486,8 @@ class FloatBar(QWidget):
 
     def update_display(self, stage: str, remaining: int):
         mm, ss = divmod(remaining, 60)
-        if self.lbl_stage.text() != stage:
-            self.lbl_stage.setText(stage)
+        if self._current_stage_text != stage:
+            self._current_stage_text = stage
             self._update_size()
         self.lbl_time.setText(f"{mm:02d}:{ss:02d}")
 
@@ -551,11 +567,14 @@ class FloatBar(QWidget):
 # ================================================================
 #  设置窗口 (包含全局声音总控)
 # ================================================================
+# ================================================================
+#  设置窗口 (包含全局声音总控) - 字体放大优化版
+# ================================================================
 class SettingsWindow(QDialog):
     _SS = """
     QDialog { background: #f0f2f5; }
-    QLabel { color: #333; font-size: 13px; }
-    QCheckBox { color: #333; font-size: 13px; }
+    QLabel { color: #333; font-size: 16px; }
+    QCheckBox { color: #333; font-size: 16px; }
     
     QListWidget {
         background: #ffffff;
@@ -564,9 +583,9 @@ class SettingsWindow(QDialog):
         outline: none;
     }
     QListWidget::item {
-        padding: 14px 18px;
+        padding: 16px 20px;
         color: #555;
-        font-size: 14px;
+        font-size: 16px;
         border-bottom: 1px solid #f5f6fa;
     }
     QListWidget::item:selected {
@@ -581,29 +600,29 @@ class SettingsWindow(QDialog):
 
     QLineEdit, QSpinBox, QFontComboBox, QComboBox, QKeySequenceEdit {
         background: #fff; color: #222; border: 1px solid #ccc;
-        border-radius: 4px; padding: 6px 8px; font-size: 13px; min-height: 20px;
+        border-radius: 4px; padding: 6px 10px; font-size: 16px; min-height: 24px;
     }
     QLineEdit:focus, QKeySequenceEdit:focus { border-color: #1a73e8; }
     
     QPushButton {
         background: #fff; color: #333; border: 1px solid #ccc;
-        border-radius: 4px; padding: 6px 14px; font-size: 13px;
+        border-radius: 4px; padding: 8px 16px; font-size: 16px;
     }
     QPushButton:hover { background: #f8f9fa; border-color: #aaa; }
     QPushButton:pressed { background: #e5e5e5; }
     
     QScrollArea { border: none; background: transparent; }
-    QScrollBar:vertical { background: #f0f0f0; width: 6px; }
-    QScrollBar::handle:vertical { background: #bbb; border-radius: 3px; min-height: 24px; }
-    QSlider::groove:horizontal { background: #ddd; height: 4px; border-radius: 2px; }
-    QSlider::handle:horizontal { background: #1a73e8; width: 16px; height: 16px; margin: -6px 0; border-radius: 8px; }
+    QScrollBar:vertical { background: #f0f0f0; width: 8px; }
+    QScrollBar::handle:vertical { background: #bbb; border-radius: 4px; min-height: 30px; }
+    QSlider::groove:horizontal { background: #ddd; height: 6px; border-radius: 3px; }
+    QSlider::handle:horizontal { background: #1a73e8; width: 20px; height: 20px; margin: -7px 0; border-radius: 10px; }
     """
 
     def __init__(self, config: Config, parent=None):
         super().__init__(parent)
         self.config = config
         self.setWindowTitle(f"{APP_NAME}  - QwejayHuang")
-        self.resize(720, 520) 
+        self.resize(850, 600)  # 增大窗口基准尺寸以适配大字体
         self.setStyleSheet(self._SS)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         
@@ -624,7 +643,7 @@ class SettingsWindow(QDialog):
         main_lay.setSpacing(0)
 
         self.nav_list = QListWidget()
-        self.nav_list.setFixedWidth(160)
+        self.nav_list.setFixedWidth(180)  # 加宽侧边栏以显示大字体
         items = ["📑 环节与流程", "🔔 提醒与声音", "🎨 外观与样式", "⌨️ 快捷键设置"]
         for txt in items:
             self.nav_list.addItem(txt)
@@ -649,8 +668,8 @@ class SettingsWindow(QDialog):
         btn_lay = QHBoxLayout(bottom_bar)
         btn_lay.setContentsMargins(20, 12, 20, 12)
         
-        self.btn_save = QPushButton("✓  保存并应用")
-        self.btn_save.setStyleSheet("background:#1a73e8; color:#fff; border:none; font-weight:bold; padding: 8px 24px;")
+        self.btn_save = QPushButton("✓保存")
+        self.btn_save.setStyleSheet("background:#1a73e8; color:#fff; border:none; font-weight:bold; padding: 10px 28px; font-size: 16px;")
         self.btn_save.setCursor(Qt.PointingHandCursor)
         
         self.btn_cancel = QPushButton("取消")
@@ -669,19 +688,19 @@ class SettingsWindow(QDialog):
         lay.setSpacing(16)
         
         lbl_title = QLabel(title)
-        lbl_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #222;")
+        lbl_title.setStyleSheet("font-size: 28px; font-weight: bold; color: #222;")
         lbl_desc = QLabel(desc)
-        lbl_desc.setStyleSheet("color: #666; margin-bottom: 10px;")
+        lbl_desc.setStyleSheet("color: #666; margin-bottom: 20px; font-size: 15px;")
         
         lay.addWidget(lbl_title)
         lay.addWidget(lbl_desc)
         return w, lay
 
     def _build_page_stages(self):
-        w, lay = self._create_page_wrap("环节配置", "配置演示的不同阶段（如：说课 5 分、答辩 2 分）。")
+        w, lay = self._create_page_wrap("环节配置", "配置演示的不同阶段（如：说课 5 分钟、答辩 2 分钟）。")
         
-        self.chk_auto_advance = QCheckBox("当前阶段结束后，自动进入并开始下一阶段 (自动模式)")
-        self.chk_auto_advance.setStyleSheet("font-weight: bold; color: #1a73e8;")
+        self.chk_auto_advance = QCheckBox("开启自动进入下一阶段")
+        self.chk_auto_advance.setStyleSheet("font-weight: bold; color: #1a73e8; font-size: 16px;")
         lay.addWidget(self.chk_auto_advance)
         
         scroll = QScrollArea()
@@ -703,7 +722,7 @@ class SettingsWindow(QDialog):
         w, lay = self._create_page_wrap("提醒与声音", "配置时间快到时产生的闪烁与系统提示音。")
         
         self.chk_global_sound = QCheckBox("🔊 开启声音")
-        self.chk_global_sound.setStyleSheet("font-weight: bold; color: #d35400; font-size: 14px;")
+        self.chk_global_sound.setStyleSheet("font-weight: bold; color: #d35400; font-size: 16px;")
         lay.addWidget(self.chk_global_sound)
         
         self.chk_10s_sound = QCheckBox("最后10秒播放提示音")
@@ -733,7 +752,7 @@ class SettingsWindow(QDialog):
 
         color_row = QHBoxLayout()
         self._color_preview = QLabel()
-        self._color_preview.setFixedSize(24, 24)
+        self._color_preview.setFixedSize(28, 28)
         c_btn = QPushButton("选择色彩")
         c_btn.clicked.connect(self._pick_color)
         color_row.addWidget(self._color_preview)
@@ -743,7 +762,7 @@ class SettingsWindow(QDialog):
 
         bg_row = QHBoxLayout()
         self._bg_color_preview = QLabel()
-        self._bg_color_preview.setFixedSize(24, 24)
+        self._bg_color_preview.setFixedSize(28, 28)
         bg_btn = QPushButton("选择色彩")
         bg_btn.clicked.connect(self._pick_bg_color)
         bg_row.addWidget(self._bg_color_preview)
@@ -755,7 +774,7 @@ class SettingsWindow(QDialog):
         self._bg_op_slider = QSlider(Qt.Horizontal)
         self._bg_op_slider.setRange(10, 100)
         self._bg_op_lbl = QLabel()
-        self._bg_op_lbl.setFixedWidth(40)
+        self._bg_op_lbl.setFixedWidth(50)
         self._bg_op_slider.valueChanged.connect(lambda v: self._bg_op_lbl.setText(f"{v}%"))
         bg_op_row.addWidget(self._bg_op_slider)
         bg_op_row.addWidget(self._bg_op_lbl)
@@ -769,7 +788,7 @@ class SettingsWindow(QDialog):
         self._size_slider = QSlider(Qt.Horizontal)
         self._size_slider.setRange(16, 72)
         self._size_lbl = QLabel()
-        self._size_lbl.setFixedWidth(40)
+        self._size_lbl.setFixedWidth(50)
         self._size_slider.valueChanged.connect(lambda v: self._size_lbl.setText(f"{v} px"))
         sz_row.addWidget(self._size_slider)
         sz_row.addWidget(self._size_lbl)
@@ -779,7 +798,7 @@ class SettingsWindow(QDialog):
         self._op_slider = QSlider(Qt.Horizontal)
         self._op_slider.setRange(20, 100)
         self._op_lbl = QLabel()
-        self._op_lbl.setFixedWidth(40)
+        self._op_lbl.setFixedWidth(50)
         self._op_slider.valueChanged.connect(lambda v: self._op_lbl.setText(f"{v}%"))
         op_row.addWidget(self._op_slider)
         op_row.addWidget(self._op_lbl)
@@ -841,18 +860,20 @@ class SettingsWindow(QDialog):
         
         name = QLineEdit(label)
         name.setPlaceholderText("阶段名称")
+        # ⚠️ 新增限制：限制最大输入长度为 30 个字符（足够涵盖绝大多数场景）
+        name.setMaxLength(30) 
         h.addWidget(name, 2)
         
         spin = QSpinBox()
         spin.setRange(1, 9999)
         spin.setValue(duration)
-        spin.setFixedWidth(70)
+        spin.setFixedWidth(85)
         h.addWidget(spin)
         
         unit_cmb = QComboBox()
         unit_cmb.addItems(["分", "秒"])
         unit_cmb.setCurrentText(unit)
-        unit_cmb.setFixedWidth(50)
+        unit_cmb.setFixedWidth(65)
         h.addWidget(unit_cmb)
 
         row = {"widget": row_widget, "name": name, "spin": spin, "unit_cmb": unit_cmb}
@@ -876,11 +897,11 @@ class SettingsWindow(QDialog):
         spin.setRange(1, 9999)
         spin.setSuffix(" 秒")
         spin.setValue(seconds)
-        spin.setFixedWidth(90)
+        spin.setFixedWidth(110)
         h.addWidget(spin)
         
         cbtn = QPushButton()
-        cbtn.setFixedSize(24, 24)
+        cbtn.setFixedSize(28, 28)
         cbtn.setCursor(Qt.PointingHandCursor)
         cbtn.setStyleSheet(f"background:{color}; border:1px solid #bbb; border-radius:4px;")
         
@@ -912,10 +933,10 @@ class SettingsWindow(QDialog):
                            lambda r: self._add_alert_row(r["spin"].value(), r["color"], r["chk_sound"].isChecked()))
 
     def _add_row_controls(self, layout, rows, row, rebuild_fn):
-        btn_style = "background:#f5f6fa; color:#444; border:1px solid #dcdde1; border-radius:4px; font-size:12px; padding:0;"
+        btn_style = "background:#f5f6fa; color:#444; border:1px solid #dcdde1; border-radius:4px; font-size:14px; padding:0;"
         for icon, tip, delta in (("↑", "上移", -1), ("↓", "下移", 1)):
             b = QPushButton(icon)
-            b.setFixedSize(24, 24)
+            b.setFixedSize(28, 28)
             b.setToolTip(tip)
             b.setCursor(Qt.PointingHandCursor)
             b.setStyleSheet(btn_style)
@@ -923,10 +944,10 @@ class SettingsWindow(QDialog):
             layout.addWidget(b)
             
         btn_del = QPushButton("✕")
-        btn_del.setFixedSize(24, 24)
+        btn_del.setFixedSize(28, 28)
         btn_del.setToolTip("删除")
         btn_del.setCursor(Qt.PointingHandCursor)
-        btn_del.setStyleSheet("background:#ffe0e0; color:#c0392b; border:1px solid #ffbbbb; border-radius:4px;")
+        btn_del.setStyleSheet("background:#ffe0e0; color:#c0392b; border:1px solid #ffbbbb; border-radius:4px; font-size:14px;")
         btn_del.clicked.connect(partial(self._delete_row, rows, row, rebuild_fn))
         layout.addWidget(btn_del)
 
