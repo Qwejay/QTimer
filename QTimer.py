@@ -14,11 +14,11 @@ from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 from PyQt5.QtSvg import QSvgRenderer
 
-APP_NAME = "QTimer V1.0.1"
+APP_NAME = "QTimer V1.0.2"
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), f".{APP_NAME.lower()}_config.json")
 
 # ================================================================
-#  原生声音播放器 (多线程异步，支持持续时长，绝对不卡界面)
+#  原生声音播放器
 # ================================================================
 def play_alert_sound(duration_ms=200):
     sys_name = platform.system()
@@ -305,12 +305,8 @@ class TimerController(QObject):
             self._stage_idx = 0
             self.loop_restarted.emit()
 
-
 # ================================================================
-#  浮动计时条 (视觉对称修复版)
-# ================================================================
-# ================================================================
-#  浮动计时条 (内部画布隔离版 - 彻底解决动画挤压重叠Bug)
+#  浮动计时条
 # ================================================================
 class FloatBar(QWidget):
     request_settings = pyqtSignal()
@@ -321,8 +317,12 @@ class FloatBar(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_Hover)
+        
         self.setFocusPolicy(Qt.ClickFocus)
 
         self._drag_pos = None
@@ -330,7 +330,7 @@ class FloatBar(QWidget):
         self._font_family = "微软雅黑"
         self._font_size = 32
         self._bg_color = QColor(20, 20, 20, 210)
-        
+               
         self._current_stage_text = "环节名称"
         
         self._text_width = 150
@@ -566,9 +566,6 @@ class FloatBar(QWidget):
 
 # ================================================================
 #  设置窗口 (包含全局声音总控)
-# ================================================================
-# ================================================================
-#  设置窗口 (包含全局声音总控) - 字体放大优化版
 # ================================================================
 class SettingsWindow(QDialog):
     _SS = """
