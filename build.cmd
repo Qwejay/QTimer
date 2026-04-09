@@ -36,7 +36,7 @@ if not exist "%SOURCE_FILE%" (
 :: 3. 创建/激活虚拟环境
 if not exist "%VENV_DIR%" (
     echo [1/4] 正在创建隔离的虚拟环境，请稍候...
-    python -m venv %VENV_DIR%
+    python -m venp %VENV_DIR%
 ) else (
     echo [1/4] 检测到已有虚拟环境，跳过创建...
 )
@@ -63,13 +63,20 @@ if exist "icon.ico" (
     echo [提示] 检测到 icon.ico，将作为程序图标注入。
 )
 
+:: 智能检测版本文件：如果有 version.txt，则加入版本信息参数
+set "VERSION_CMD="
+if exist "version.txt" (
+    set "VERSION_CMD=--version-file=version.txt"
+    echo [提示] 检测到 version.txt，将注入右键属性详细信息。
+)
+
 :: 参数说明:
 :: -F: 生成单文件 (Onefile)
 :: -w: 无控制台窗口 (Windowed/Noconsole)
 :: --clean: 清理缓存
 :: --noconfirm: 不询问直接覆盖
 :: -n: 指定生成文件名
-pyinstaller -F -w --clean --noconfirm -n "%EXE_NAME%" !ICON_CMD! "%SOURCE_FILE%"
+pyinstaller -F -w --clean --noconfirm -n "%EXE_NAME%" !ICON_CMD! !VERSION_CMD! "%SOURCE_FILE%"
 
 if %errorlevel% neq 0 (
     echo.
