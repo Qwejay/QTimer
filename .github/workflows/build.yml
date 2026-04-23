@@ -1,6 +1,5 @@
 name: Build and Release QTimer
 
-# 主动启用 Node.js 24，彻底消除旧版废弃警告
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
