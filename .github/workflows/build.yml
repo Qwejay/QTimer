@@ -1,0 +1,93 @@
+name: Build and Release QTimer
+
+# 触发条件
+on:
+  push:
+    branches: [ "main", "master" ]  # 推送到主分支时触发
+    tags: [ 'v*' ]                  # 当推送 v1.0.4 这样的 tag 时触发自动发布
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:                # 允许在 Actions 页面手动点击运行
+
+jobs:
+  build:
+    name: Build Windows Executable
+    runs-on: windows-latest         # 必须使用 Windows 运行器才能打包 exe
+
+    steps:
+      # 1. 获取最新代码
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 2. 配置 Python 环境
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'     # Python 3.9 对 PyQt5 和 PyInstaller 兼容性极佳
+          cache: 'pip'
+
+      # 3. 安装依赖库 (复刻 cmd 中的逻辑)
+      - name: Install Dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          if (Test-Path "requirements.txt") {
+              echo "Found requirements.txt, installing..."
+              pip install -r requirements.txt
+          } else {
+              echo "No requirements.txt found, installing base dependencies..."
+              pip install pyinstaller PyQt5
+          }
+
+      # 4. 使用 PyInstaller 打包 (包含智能图标和版本探测逻辑)
+      - name: Build with PyInstaller
+        shell: pwsh
+        run: |
+          $ICON_CMD = ""
+          if (Test-Path "icon.ico") { 
+              echo "Detected icon.ico, adding to build."
+              $ICON_CMD = "--icon=icon.ico" 
+          }
+
+          $VERSION_CMD = ""
+          if (Test-Path "version.txt") { 
+              echo "Detected version.txt, adding to build."
+              $VERSION_CMD = "--version-file=version.txt" 
+          }
+
+          # 核心打包命令
+          pyinstaller -F -w --clean --noconfirm -n "QTimer" $ICON_CMD $VERSION_CMD QTimer.py
+
+      # 5. 上传构建结果作为 Artifact (可在 Actions 页面直接下载)
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QTimer-Windows-Portable
+          path: dist/QTimer.exe
+          retention-days: 30
+
+  # 自动发布流程 (仅在打 Tag 时触发)
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/') # 只有推送 v* 标签才会执行
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 下载上一步构建好的 exe
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: QTimer-Windows-Portable
+          path: ./dist
+
+      # 自动创建 Release 并附加 exe 文件
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./dist/QTimer.exe
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

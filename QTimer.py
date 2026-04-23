@@ -8,48 +8,74 @@ import time
 import math
 from dataclasses import dataclass, asdict
 from functools import partial
+from typing import Dict, List, Optional
 
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 from PyQt5.QtSvg import QSvgRenderer
 
-APP_NAME = "QTimer V1.0.2"
-CONFIG_PATH = os.path.join(os.path.expanduser("~"), f".{APP_NAME.lower()}_config.json")
+APP_NAME = "QTimer"
+APP_VERSION = "Final Release V1.0.4"
 
 # ================================================================
-#  原生声音播放器
+#  工具系统：路径探测与原子化保存 (工业级防损毁)
 # ================================================================
-def play_alert_sound(duration_ms=200):
+def get_app_dir() -> str:
+    """获取程序当前所在目录，完美兼容 PyInstaller 打包后的环境"""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+def get_config_path() -> str:
+    """智能探测配置保存路径，具备权限降级机制"""
+    local_path = os.path.join(get_app_dir(), f".{APP_NAME.lower()}_config.json")
+    try:
+        # 测试当前目录的写入权限
+        with open(local_path, 'a', encoding="utf-8"): 
+            pass
+        return local_path
+    except PermissionError:
+        # 如果放在 C盘系统目录等无权写入的区域，自动降级到 User 目录
+        user_path = os.path.join(os.path.expanduser("~"), f".{APP_NAME.lower()}_config.json")
+        return user_path
+
+CONFIG_PATH = get_config_path()
+
+# ================================================================
+#  原生声音播放器 (安全防阻塞)
+# ================================================================
+def play_alert_sound(duration_ms: int = 200) -> None:
     sys_name = platform.system()
+    
     if sys_name == "Windows":
         def _beep():
             try:
                 import winsound
-                # 发出 1500 Hz 的清脆声，根据 duration_ms 决定是短滴还是长鸣
                 winsound.Beep(1500, duration_ms)
             except Exception:
                 pass
         threading.Thread(target=_beep, daemon=True).start()
+        
     elif sys_name == "Darwin":  # macOS
         def _mac_beep():
             try:
                 if duration_ms > 1000:
-                    # 对于超过 1 秒的长鸣，连续播放三次系统声效模拟长提示
                     for _ in range(3):
                         subprocess.call(['afplay', '/System/Library/Sounds/Glass.aiff'])
                 else:
-                    subprocess.Popen(['afplay', '/System/Library/Sounds/Tink.aiff'])
+                    subprocess.call(['afplay', '/System/Library/Sounds/Tink.aiff'])
             except Exception:
                 pass
         threading.Thread(target=_mac_beep, daemon=True).start()
+        
     else:
         QApplication.beep()
 
 # ================================================================
-#  SVG 图标工厂
+#  SVG 图标内存缓存池 (极致性能渲染)
 # ================================================================
-SVG_ICONS = {
+SVG_ICONS: Dict[str, str] = {
     "play":     '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><polygon points="6,4 20,12 6,20" fill="{color}"/></svg>',
     "pause":    '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="5" y="4" width="4" height="16" rx="1" fill="{color}"/><rect x="15" y="4" width="4" height="16" rx="1" fill="{color}"/></svg>',
     "restart":  '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z" fill="{color}"/></svg>',
@@ -59,19 +85,30 @@ SVG_ICONS = {
     "close":    '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><line x1="4" y1="4" x2="20" y2="20" stroke="{color}" stroke-width="2.5" stroke-linecap="round"/><line x1="20" y1="4" x2="4" y2="20" stroke="{color}" stroke-width="2.5" stroke-linecap="round"/></svg>',
 }
 
-def make_svg_icon(name: str, size: int, color: str = "white") -> QIcon:
-    svg_str = SVG_ICONS[name].replace("{color}", color)
+_ICON_CACHE: Dict[str, QIcon] = {}
+
+def get_svg_icon(name: str, size: int, color: str = "white") -> QIcon:
+    cache_key = f"{name}_{size}_{color}"
+    if cache_key in _ICON_CACHE:
+        return _ICON_CACHE[cache_key]
+        
+    svg_str = SVG_ICONS.get(name, "").replace("{color}", color)
     renderer = QSvgRenderer(svg_str.encode("utf-8"))
+    
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
+    painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
     renderer.render(painter)
     painter.end()
-    return QIcon(pixmap)
+    
+    icon = QIcon(pixmap)
+    _ICON_CACHE[cache_key] = icon
+    return icon
 
 
 # ================================================================
-#  数据模型
+#  核心数据结构
 # ================================================================
 @dataclass
 class Stage:
@@ -84,10 +121,10 @@ class Stage:
         return self.duration * 60 if self.unit == "分" else self.duration
 
     @classmethod
-    def from_dict(cls, d: dict):
+    def from_dict(cls, d: dict) -> 'Stage':
         if "minutes" in d and "duration" not in d:
-            return cls(label=d["label"], duration=d["minutes"], unit="分")
-        return cls(label=d["label"], duration=d.get("duration", 5), unit=d.get("unit", "分"))
+            return cls(label=d.get("label", ""), duration=d["minutes"], unit="分")
+        return cls(label=d.get("label", ""), duration=d.get("duration", 5), unit=d.get("unit", "分"))
 
 @dataclass
 class Alert:
@@ -96,31 +133,31 @@ class Alert:
     play_sound: bool = True
 
     @classmethod
-    def from_dict(cls, d: dict):
-        return cls(seconds=d["seconds"], color=d["color"], play_sound=d.get("play_sound", True))
+    def from_dict(cls, d: dict) -> 'Alert':
+        return cls(seconds=d.get("seconds", 30), color=d.get("color", "#ffaa00"), play_sound=d.get("play_sound", True))
 
 class Config:
     def __init__(self):
-        self.auto_advance = False        
-        self.global_sound = True          # 全局声音主控开关
-        self.countdown_10s_sound = True  
+        self.auto_advance: bool = False        
+        self.global_sound: bool = True          
+        self.countdown_10s_sound: bool = True  
 
-        self.stages = [Stage("说课时间", 5, "分"), Stage("答辩时间", 2, "分")]
-        self.alerts = [Alert(30, "#ffaa00", True), Alert(10, "#ff4444", True)]
+        self.stages: List[Stage] = [Stage("说课时间", 5, "分"), Stage("答辩时间", 2, "分")]
+        self.alerts: List[Alert] = [Alert(30, "#ffaa00", True), Alert(10, "#ff4444", True)]
         
-        self.color = "#ffffff"
-        self.font = "微软雅黑"
-        self.font_size = 32
-        self.opacity = 0.95
-        self.bg_color = "#141414"
-        self.bg_opacity = 82
+        self.color: str = "#ffffff"
+        self.font: str = "微软雅黑"
+        self.font_size: int = 32
+        self.opacity: float = 0.95
+        self.bg_color: str = "#141414"
+        self.bg_opacity: int = 82
 
-        self.shortcut_toggle = "Ctrl+Space"
-        self.shortcut_reset = "Ctrl+Return"
-        self.shortcut_prev = "Ctrl+Left"
-        self.shortcut_next = "Ctrl+Right"
+        self.shortcut_toggle: str = "Ctrl+Space"
+        self.shortcut_reset: str = "Ctrl+Return"
+        self.shortcut_prev: str = "Ctrl+Left"
+        self.shortcut_next: str = "Ctrl+Right"
 
-    def save(self):
+    def save(self) -> None:
         data = {
             "auto_advance": self.auto_advance,
             "global_sound": self.global_sound,
@@ -133,20 +170,30 @@ class Config:
             "shortcut_toggle": self.shortcut_toggle, "shortcut_reset": self.shortcut_reset,
             "shortcut_prev": self.shortcut_prev, "shortcut_next": self.shortcut_next,
         }
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        try:
+            # 原子化保存操作：先写入临时文件，成功后再覆盖，防止配置损毁
+            tmp_path = CONFIG_PATH + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, CONFIG_PATH)
+        except Exception as e:
+            print(f"配置保存异常: {e}")
 
-    def load(self):
+    def load(self) -> None:
         if not os.path.exists(CONFIG_PATH):
             return
         try:
-            with open(CONFIG_PATH, encoding="utf-8") as f:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 d = json.load(f)
             self.auto_advance = d.get("auto_advance", self.auto_advance)
             self.global_sound = d.get("global_sound", self.global_sound)
             self.countdown_10s_sound = d.get("countdown_10s_sound", self.countdown_10s_sound)
-            self.stages = [Stage.from_dict(s) for s in d.get("stages", [])] or self.stages
-            self.alerts = [Alert.from_dict(a) for a in d.get("alerts", [])] or self.alerts
+            
+            stages = [Stage.from_dict(s) for s in d.get("stages", [])]
+            if stages: self.stages = stages
+            
+            alerts = [Alert.from_dict(a) for a in d.get("alerts", [])]
+            if alerts: self.alerts = alerts
             
             self.color = d.get("color", self.color)
             self.font = d.get("font", self.font)
@@ -159,8 +206,8 @@ class Config:
             self.shortcut_reset = d.get("shortcut_reset", self.shortcut_reset)
             self.shortcut_prev = d.get("shortcut_prev", self.shortcut_prev)
             self.shortcut_next = d.get("shortcut_next", self.shortcut_next)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"配置加载异常，将使用默认安全设置: {e}")
 
     def bg_qcolor(self) -> QColor:
         c = QColor(self.bg_color)
@@ -183,21 +230,21 @@ class TimerController(QObject):
         self.config = config
         
         self._timer = QTimer(self)
-        self._timer.setInterval(200) # 更高频率刷新UI防止卡顿，核心逻辑依据时间戳
+        self._timer.setInterval(200)
         self._timer.timeout.connect(self._tick)
         
-        self.running = False
-        self.paused = True 
+        self.running: bool = False
+        self.paused: bool = True 
         
-        self._stage_idx = 0
-        self._remaining_float = 0.0   # 记录精确剩余小数秒
-        self._target_time = 0.0       # 锚定系统时间，防止漂移
-        self._last_displayed = -1
+        self._stage_idx: int = 0
+        self._remaining_float: float = 0.0   
+        self._target_time: float = 0.0       
+        self._last_displayed: int = -1
         
         self._triggered = set()
-        self._zero_triggered = False
+        self._zero_triggered: bool = False
 
-    def toggle_pause(self):
+    def toggle_pause(self) -> None:
         if self._remaining_float <= 0:
             return
         
@@ -206,41 +253,42 @@ class TimerController(QObject):
             
         self.paused = not self.paused
         if not self.paused:
-            # 恢复时，根据剩余精确时间重新推算目标时间戳
             self._target_time = time.time() + self._remaining_float
             self._timer.start()
         else:
             self._timer.stop()
-            # 停止时，_remaining_float 已经在 _tick 中保存为了精确小数
             
         self.state_changed.emit(not self.paused)
 
-    def restart_stage(self):
+    def restart_stage(self) -> None:
         self._load_stage()
         self._stop_and_wait()
 
-    def prev_stage(self):
+    def prev_stage(self) -> None:
         self._stage_idx = (self._stage_idx - 1) % len(self.config.stages)
         self._load_stage()
         self._stop_and_wait()
 
-    def next_stage(self):
+    def next_stage(self) -> None:
         self._advance_idx()
         self._load_stage()
         self._stop_and_wait()
 
-    def stop(self):
+    def stop(self) -> None:
+        self._timer.stop()
         self._stage_idx = 0
         self._load_stage()
         self._stop_and_wait()
         self.running = False
 
-    def _stop_and_wait(self):
+    def _stop_and_wait(self) -> None:
         self._timer.stop()
         self.paused = True
         self.state_changed.emit(False)
 
-    def _load_stage(self):
+    def _load_stage(self) -> None:
+        if not self.config.stages:
+            return
         st = self.config.stages[self._stage_idx]
         self._remaining_float = float(st.seconds)
         self._last_displayed = st.seconds
@@ -251,30 +299,22 @@ class TimerController(QObject):
         self.stage_changed.emit(self._stage_idx, st.label)
         self.tick.emit(st.label, st.seconds)
 
-    def _tick(self):
-        if self.paused:
+    def _tick(self) -> None:
+        if self.paused or not self.config.stages:
             return
 
         now = time.time()
         self._remaining_float = self._target_time - now
-        
-        # 向上取整满足倒计时的标准人类视觉习惯 (5.1秒显示为 6 秒)
-        display_sec = int(math.ceil(self._remaining_float))
-        if display_sec < 0:
-            display_sec = 0
+        display_sec = max(0, int(math.ceil(self._remaining_float)))
 
-        # 如果时间跨秒了才更新，降低 UI 刷新率负担
         if display_sec != self._last_displayed:
             self._last_displayed = display_sec
             self.tick.emit(self.config.stages[self._stage_idx].label, display_sec)
 
-            # --- 全局声音总控 ---
             if self.config.global_sound:
-                # 最后十秒短音
                 if self.config.countdown_10s_sound and 0 < display_sec <= 10:
                     play_alert_sound(200)
 
-                # 节点触发音与变色闪烁
                 for a in self.config.alerts:
                     if display_sec == a.seconds and a.seconds not in self._triggered:
                         self._triggered.add(a.seconds)
@@ -282,31 +322,31 @@ class TimerController(QObject):
                         if a.play_sound:
                             play_alert_sound(200)
 
-        # 时间彻底耗尽的处理
         if self._remaining_float <= 0 and not self._zero_triggered:
             self._zero_triggered = True
             self._remaining_float = 0.0
             
-            # 长鸣 2 秒
             if self.config.global_sound:
                 play_alert_sound(2000)
 
             if self.config.auto_advance:
                 self._advance_idx()
                 self._load_stage()
-                # 自动模式下重新锚定新环节的系统时间，实现无缝衔接
                 self._target_time = time.time() + self._remaining_float 
             else:
                 self._stop_and_wait()
 
-    def _advance_idx(self):
+    def _advance_idx(self) -> None:
+        if not self.config.stages:
+            return
         self._stage_idx += 1
         if self._stage_idx >= len(self.config.stages):
             self._stage_idx = 0
             self.loop_restarted.emit()
 
+
 # ================================================================
-#  浮动计时条
+#  浮动计时条 (高精动画层)
 # ================================================================
 class FloatBar(QWidget):
     request_settings = pyqtSignal()
@@ -317,12 +357,9 @@ class FloatBar(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
-        
         self.setAttribute(Qt.WA_ShowWithoutActivating)
-        
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_Hover)
-        
         self.setFocusPolicy(Qt.ClickFocus)
 
         self._drag_pos = None
@@ -331,8 +368,7 @@ class FloatBar(QWidget):
         self._font_size = 32
         self._bg_color = QColor(20, 20, 20, 210)
                
-        self._current_stage_text = "环节名称"
-        
+        self._current_stage_text = ""
         self._text_width = 150
         self._full_width = 300
 
@@ -357,16 +393,14 @@ class FloatBar(QWidget):
         self._update_size()
 
     @pyqtProperty(int)
-    def bar_width(self):
+    def bar_width(self) -> int:
         return self.width()
 
     @bar_width.setter
-    def bar_width(self, w):
+    def bar_width(self, w: int) -> None:
         self.setFixedWidth(w)
 
-    def _build_ui(self):
-        # ⚠️ 核心修复方案：创建一个“底层画布”
-        # 我们把所有控件放在画布上，而不是直接放在窗口上。
+    def _build_ui(self) -> None:
         self._canvas = QWidget(self)
         self._canvas.move(0, 0)
         
@@ -415,7 +449,7 @@ class FloatBar(QWidget):
         b.setFixedSize(self.ICON_SIZE, self.ICON_SIZE)
         b.setToolTip(tip)
         b.setCursor(Qt.PointingHandCursor)
-        b.setIcon(make_svg_icon(icon_name, self.ICON_SIZE - 8))
+        b.setIcon(get_svg_icon(icon_name, self.ICON_SIZE - 8))
         b.setIconSize(QSize(self.ICON_SIZE - 8, self.ICON_SIZE - 8))
         b.setStyleSheet("""
             QPushButton { background: rgba(255,255,255,15); border: none; border-radius: 7px; }
@@ -423,7 +457,7 @@ class FloatBar(QWidget):
         """)
         return b
 
-    def apply_style(self, color, font, size, opacity, bg_color: QColor):
+    def apply_style(self, color: str, font: str, size: int, opacity: float, bg_color: QColor) -> None:
         self._text_color = color
         self._font_family = font
         self._font_size = size
@@ -433,7 +467,7 @@ class FloatBar(QWidget):
         self._update_size()
         self.update()
 
-    def _refresh_labels(self, stage_color=None, time_color=None):
+    def _refresh_labels(self, stage_color: Optional[str] = None, time_color: Optional[str] = None) -> None:
         sc = stage_color or self._text_color
         tc = time_color or self._text_color
         stage_size = max(13, int(self._font_size * 0.65))
@@ -449,15 +483,14 @@ class FloatBar(QWidget):
         self.lbl_stage.style().polish(self.lbl_stage)
         self.lbl_time.style().polish(self.lbl_time)
 
-    def _update_size(self):
+    def _update_size(self) -> None:
         fm_stage = self.lbl_stage.fontMetrics()
         fm_time = self.lbl_time.fontMetrics()
         
-        text = self._current_stage_text
-        if not text or text == "环节名称": text = "说课时间"
+        text = self._current_stage_text or "环节名称"
         
-        stage_w = fm_stage.horizontalAdvance(text) + 16
-        time_w = fm_time.horizontalAdvance("88:88") + 16
+        stage_w = fm_stage.horizontalAdvance(text) + 20
+        time_w = fm_time.horizontalAdvance("88:88") + 20
         
         self.lbl_stage.setText(text)
         self.lbl_stage.setFixedWidth(stage_w)
@@ -469,12 +502,8 @@ class FloatBar(QWidget):
         self._text_width = 18 + stage_w + 12 + time_w + 18
         self._full_width = self._text_width + btn_w + 16
 
-        h = max(self._font_size + 20, 50)
-        
-        # ⚠️ 修复关键：我们将内部的画布（Canvas）永远锁死在“展开状态的最大宽度”！
-        # 这样一来，不管外层的窗口怎么因为动画缩小，布局引擎都绝对不会挤压内部控件。
+        h = max(self._font_size + 24, 50)
         self._canvas.setFixedSize(self._full_width, h)
-        
         self.setFixedHeight(h)
 
         if self.underMouse():
@@ -484,33 +513,33 @@ class FloatBar(QWidget):
             self.setFixedWidth(self._text_width)
             self._btn_opacity.setOpacity(0.0)
 
-    def update_display(self, stage: str, remaining: int):
+    def update_display(self, stage: str, remaining: int) -> None:
         mm, ss = divmod(remaining, 60)
         if self._current_stage_text != stage:
             self._current_stage_text = stage
             self._update_size()
         self.lbl_time.setText(f"{mm:02d}:{ss:02d}")
 
-    def set_running(self, running: bool):
-        self.btn_toggle.setIcon(make_svg_icon("pause" if running else "play", self.ICON_SIZE - 8))
+    def set_running(self, running: bool) -> None:
+        self.btn_toggle.setIcon(get_svg_icon("pause" if running else "play", self.ICON_SIZE - 8))
 
-    def start_flash(self, color: str, auto_stop_ms=3000):
+    def start_flash(self, color: str, auto_stop_ms: int = 3000) -> None:
         self._flash_color = color
         self._flash_state = False
         self._flash_timer.start(400)
         if auto_stop_ms > 0:
             QTimer.singleShot(auto_stop_ms, self.stop_flash)
 
-    def stop_flash(self):
+    def stop_flash(self) -> None:
         self._flash_timer.stop()
         self._refresh_labels()
 
-    def _do_flash(self):
+    def _do_flash(self) -> None:
         self._flash_state = not self._flash_state
         c = self._flash_color if self._flash_state else self._text_color
         self._refresh_labels(stage_color=c, time_color=c)
 
-    def enterEvent(self, e):
+    def enterEvent(self, e) -> None:
         self._anim_group.stop()
         self._width_anim.setStartValue(self.width())
         self._width_anim.setEndValue(self._full_width)
@@ -519,7 +548,7 @@ class FloatBar(QWidget):
         self._anim_group.start()
         super().enterEvent(e)
 
-    def leaveEvent(self, e):
+    def leaveEvent(self, e) -> None:
         self._anim_group.stop()
         self._width_anim.setStartValue(self.width())
         self._width_anim.setEndValue(self._text_width)
@@ -528,7 +557,7 @@ class FloatBar(QWidget):
         self._anim_group.start()
         super().leaveEvent(e)
 
-    def _show_ctx_menu(self, pos):
+    def _show_ctx_menu(self, pos: QPoint) -> None:
         m = QMenu(self)
         m.setStyleSheet("""
             QMenu { background:#2a2a2a; color:#eee; border:1px solid #444; border-radius:6px; padding:4px; }
@@ -545,27 +574,27 @@ class FloatBar(QWidget):
         m.addAction("退出").triggered.connect(self.request_exit.emit)
         m.exec_(self.mapToGlobal(pos))
 
-    def paintEvent(self, e):
+    def paintEvent(self, e) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setBrush(self._bg_color)
         p.setPen(Qt.NoPen)
         p.drawRoundedRect(self.rect(), 12, 12)
 
-    def mousePressEvent(self, e):
+    def mousePressEvent(self, e: QMouseEvent) -> None:
         if e.button() == Qt.LeftButton:
             self._drag_pos = e.globalPos() - self.pos()
 
-    def mouseMoveEvent(self, e):
+    def mouseMoveEvent(self, e: QMouseEvent) -> None:
         if self._drag_pos and e.buttons() == Qt.LeftButton:
             self.move(e.globalPos() - self._drag_pos)
 
-    def mouseReleaseEvent(self, e):
+    def mouseReleaseEvent(self, e: QMouseEvent) -> None:
         self._drag_pos = None
 
 
 # ================================================================
-#  设置窗口 (包含全局声音总控)
+#  设置窗口与后台协调
 # ================================================================
 class SettingsWindow(QDialog):
     _SS = """
@@ -573,38 +602,15 @@ class SettingsWindow(QDialog):
     QLabel { color: #333; font-size: 16px; }
     QCheckBox { color: #333; font-size: 16px; }
     
-    QListWidget {
-        background: #ffffff;
-        border: none;
-        border-right: 1px solid #dcdde1;
-        outline: none;
-    }
-    QListWidget::item {
-        padding: 16px 20px;
-        color: #555;
-        font-size: 16px;
-        border-bottom: 1px solid #f5f6fa;
-    }
-    QListWidget::item:selected {
-        background: #f0f7ff;
-        color: #1a73e8;
-        font-weight: bold;
-        border-left: 4px solid #1a73e8;
-    }
-    QListWidget::item:hover:!selected {
-        background: #f8f9fa;
-    }
+    QListWidget { background: #ffffff; border: none; border-right: 1px solid #dcdde1; outline: none; }
+    QListWidget::item { padding: 16px 20px; color: #555; font-size: 16px; border-bottom: 1px solid #f5f6fa; }
+    QListWidget::item:selected { background: #f0f7ff; color: #1a73e8; font-weight: bold; border-left: 4px solid #1a73e8; }
+    QListWidget::item:hover:!selected { background: #f8f9fa; }
 
-    QLineEdit, QSpinBox, QFontComboBox, QComboBox, QKeySequenceEdit {
-        background: #fff; color: #222; border: 1px solid #ccc;
-        border-radius: 4px; padding: 6px 10px; font-size: 16px; min-height: 24px;
-    }
+    QLineEdit, QSpinBox, QFontComboBox, QComboBox, QKeySequenceEdit { background: #fff; color: #222; border: 1px solid #ccc; border-radius: 4px; padding: 6px 10px; font-size: 16px; min-height: 24px; }
     QLineEdit:focus, QKeySequenceEdit:focus { border-color: #1a73e8; }
     
-    QPushButton {
-        background: #fff; color: #333; border: 1px solid #ccc;
-        border-radius: 4px; padding: 8px 16px; font-size: 16px;
-    }
+    QPushButton { background: #fff; color: #333; border: 1px solid #ccc; border-radius: 4px; padding: 8px 16px; font-size: 16px; }
     QPushButton:hover { background: #f8f9fa; border-color: #aaa; }
     QPushButton:pressed { background: #e5e5e5; }
     
@@ -618,8 +624,8 @@ class SettingsWindow(QDialog):
     def __init__(self, config: Config, parent=None):
         super().__init__(parent)
         self.config = config
-        self.setWindowTitle(f"{APP_NAME}  - QwejayHuang")
-        self.resize(850, 600)  # 增大窗口基准尺寸以适配大字体
+        self.setWindowTitle(f"{APP_NAME} Settings")
+        self.resize(850, 600)
         self.setStyleSheet(self._SS)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         
@@ -629,7 +635,7 @@ class SettingsWindow(QDialog):
         self._build_ui()
         self._populate()
 
-    def _build_ui(self):
+    def _build_ui(self) -> None:
         root_lay = QVBoxLayout(self)
         root_lay.setContentsMargins(0, 0, 0, 0)
         root_lay.setSpacing(0)
@@ -640,15 +646,12 @@ class SettingsWindow(QDialog):
         main_lay.setSpacing(0)
 
         self.nav_list = QListWidget()
-        self.nav_list.setFixedWidth(180)  # 加宽侧边栏以显示大字体
-        items = ["📑 环节与流程", "🔔 提醒与声音", "🎨 外观与样式", "⌨️ 快捷键设置"]
-        for txt in items:
-            self.nav_list.addItem(txt)
+        self.nav_list.setFixedWidth(180)
+        self.nav_list.addItems(["📑 环节与流程", "🔔 提醒与声音", "🎨 外观与样式", "⌨️ 快捷键设置"])
         main_lay.addWidget(self.nav_list)
 
         self.stack = QStackedWidget()
         self.stack.setStyleSheet("background: #fcfcfd;")
-        
         self.stack.addWidget(self._build_page_stages())
         self.stack.addWidget(self._build_page_alerts())
         self.stack.addWidget(self._build_page_appearance())
@@ -665,7 +668,7 @@ class SettingsWindow(QDialog):
         btn_lay = QHBoxLayout(bottom_bar)
         btn_lay.setContentsMargins(20, 12, 20, 12)
         
-        self.btn_save = QPushButton("✓保存")
+        self.btn_save = QPushButton("✓ 保存")
         self.btn_save.setStyleSheet("background:#1a73e8; color:#fff; border:none; font-weight:bold; padding: 10px 28px; font-size: 16px;")
         self.btn_save.setCursor(Qt.PointingHandCursor)
         
@@ -678,7 +681,7 @@ class SettingsWindow(QDialog):
         btn_lay.addWidget(self.btn_save)
         root_lay.addWidget(bottom_bar)
 
-    def _create_page_wrap(self, title: str, desc: str) -> (QWidget, QVBoxLayout):
+    def _create_page_wrap(self, title: str, desc: str) -> tuple:
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(30, 24, 30, 20)
@@ -693,9 +696,8 @@ class SettingsWindow(QDialog):
         lay.addWidget(lbl_desc)
         return w, lay
 
-    def _build_page_stages(self):
+    def _build_page_stages(self) -> QWidget:
         w, lay = self._create_page_wrap("环节配置", "配置演示的不同阶段（如：说课 5 分钟、答辩 2 分钟）。")
-        
         self.chk_auto_advance = QCheckBox("开启自动进入下一阶段")
         self.chk_auto_advance.setStyleSheet("font-weight: bold; color: #1a73e8; font-size: 16px;")
         lay.addWidget(self.chk_auto_advance)
@@ -715,14 +717,13 @@ class SettingsWindow(QDialog):
         lay.addWidget(btn_add, alignment=Qt.AlignCenter)
         return w
 
-    def _build_page_alerts(self):
+    def _build_page_alerts(self) -> QWidget:
         w, lay = self._create_page_wrap("提醒与声音", "配置时间快到时产生的闪烁与系统提示音。")
-        
-        self.chk_global_sound = QCheckBox("🔊 开启声音")
+        self.chk_global_sound = QCheckBox("🔊 开启全局声音")
         self.chk_global_sound.setStyleSheet("font-weight: bold; color: #d35400; font-size: 16px;")
         lay.addWidget(self.chk_global_sound)
         
-        self.chk_10s_sound = QCheckBox("最后10秒播放提示音")
+        self.chk_10s_sound = QCheckBox("最后10秒倒数播放提示音")
         lay.addWidget(self.chk_10s_sound)
 
         scroll = QScrollArea()
@@ -740,74 +741,54 @@ class SettingsWindow(QDialog):
         lay.addWidget(btn_add, alignment=Qt.AlignCenter)
         return w
 
-    def _build_page_appearance(self):
+    def _build_page_appearance(self) -> QWidget:
         w, lay = self._create_page_wrap("外观样式", "自定义悬浮计时器的色彩、透明度与排版风格。")
-        
         form = QFormLayout()
         form.setContentsMargins(10, 10, 10, 10)
         form.setSpacing(20)
 
-        color_row = QHBoxLayout()
-        self._color_preview = QLabel()
-        self._color_preview.setFixedSize(28, 28)
-        c_btn = QPushButton("选择色彩")
-        c_btn.clicked.connect(self._pick_color)
-        color_row.addWidget(self._color_preview)
-        color_row.addWidget(c_btn)
-        color_row.addStretch()
-        form.addRow("文字颜色：", color_row)
+        def add_color_row(title, attr_name):
+            row = QHBoxLayout()
+            preview = QLabel()
+            preview.setFixedSize(28, 28)
+            btn = QPushButton("选择色彩")
+            btn.clicked.connect(lambda: self._pick_color(preview, attr_name))
+            row.addWidget(preview)
+            row.addWidget(btn)
+            row.addStretch()
+            form.addRow(title, row)
+            return preview
 
-        bg_row = QHBoxLayout()
-        self._bg_color_preview = QLabel()
-        self._bg_color_preview.setFixedSize(28, 28)
-        bg_btn = QPushButton("选择色彩")
-        bg_btn.clicked.connect(self._pick_bg_color)
-        bg_row.addWidget(self._bg_color_preview)
-        bg_row.addWidget(bg_btn)
-        bg_row.addStretch()
-        form.addRow("背景颜色：", bg_row)
+        self._color_preview = add_color_row("文字颜色：", "_cur_color")
+        self._bg_color_preview = add_color_row("背景颜色：", "_cur_bg_color")
 
-        bg_op_row = QHBoxLayout()
-        self._bg_op_slider = QSlider(Qt.Horizontal)
-        self._bg_op_slider.setRange(10, 100)
-        self._bg_op_lbl = QLabel()
-        self._bg_op_lbl.setFixedWidth(50)
-        self._bg_op_slider.valueChanged.connect(lambda v: self._bg_op_lbl.setText(f"{v}%"))
-        bg_op_row.addWidget(self._bg_op_slider)
-        bg_op_row.addWidget(self._bg_op_lbl)
-        form.addRow("背景透明度：", bg_op_row)
+        def add_slider_row(title, min_v, max_v, suffix=""):
+            row = QHBoxLayout()
+            slider = QSlider(Qt.Horizontal)
+            slider.setRange(min_v, max_v)
+            lbl = QLabel()
+            lbl.setFixedWidth(60)
+            slider.valueChanged.connect(lambda v: lbl.setText(f"{v}{suffix}"))
+            row.addWidget(slider)
+            row.addWidget(lbl)
+            form.addRow(title, row)
+            return slider
 
+        self._bg_op_slider = add_slider_row("背景透明度：", 10, 100, "%")
+        
         self._font_cmb = QFontComboBox()
         self._font_cmb.setFontFilters(QFontComboBox.ScalableFonts)
         form.addRow("字体风格：", self._font_cmb)
 
-        sz_row = QHBoxLayout()
-        self._size_slider = QSlider(Qt.Horizontal)
-        self._size_slider.setRange(16, 72)
-        self._size_lbl = QLabel()
-        self._size_lbl.setFixedWidth(50)
-        self._size_slider.valueChanged.connect(lambda v: self._size_lbl.setText(f"{v} px"))
-        sz_row.addWidget(self._size_slider)
-        sz_row.addWidget(self._size_lbl)
-        form.addRow("时间字号：", sz_row)
-
-        op_row = QHBoxLayout()
-        self._op_slider = QSlider(Qt.Horizontal)
-        self._op_slider.setRange(20, 100)
-        self._op_lbl = QLabel()
-        self._op_lbl.setFixedWidth(50)
-        self._op_slider.valueChanged.connect(lambda v: self._op_lbl.setText(f"{v}%"))
-        op_row.addWidget(self._op_slider)
-        op_row.addWidget(self._op_lbl)
-        form.addRow("整体透明度：", op_row)
+        self._size_slider = add_slider_row("时间字号：", 16, 72, " px")
+        self._op_slider = add_slider_row("整体透明度：", 20, 100, "%")
 
         lay.addLayout(form)
         lay.addStretch()
         return w
 
-    def _build_page_shortcuts(self):
-        w, lay = self._create_page_wrap("快捷键配置", "为核心操作分配全局快捷键。\n(⚠️注意：由于系统级限制，快捷键仅在您鼠标点击激活计时器面板时生效)")
-        
+    def _build_page_shortcuts(self) -> QWidget:
+        w, lay = self._create_page_wrap("快捷键配置", "为核心操作分配全局快捷键。\n(⚠️由于系统级限制，快捷键需鼠标点击激活面板时生效)")
         form = QFormLayout()
         form.setContentsMargins(10, 10, 10, 10)
         form.setSpacing(24)
@@ -826,10 +807,12 @@ class SettingsWindow(QDialog):
         lay.addStretch()
         return w
 
-    def _populate(self):
+    def _populate(self) -> None:
         self.chk_auto_advance.setChecked(self.config.auto_advance)
         for s in self.config.stages:
             self._add_stage_row(s.label, s.duration, s.unit)
+        if not self.config.stages:
+            self._add_stage_row()
         
         self.chk_global_sound.setChecked(self.config.global_sound)
         self.chk_10s_sound.setChecked(self.config.countdown_10s_sound)
@@ -850,14 +833,13 @@ class SettingsWindow(QDialog):
         self.ks_prev.setKeySequence(QKeySequence(self.config.shortcut_prev))
         self.ks_next.setKeySequence(QKeySequence(self.config.shortcut_next))
 
-    def _add_stage_row(self, label="新阶段", duration=3, unit="分"):
+    def _add_stage_row(self, label: str = "新阶段", duration: int = 3, unit: str = "分") -> None:
         row_widget = QWidget()
         h = QHBoxLayout(row_widget)
         h.setContentsMargins(0, 6, 0, 6)
         
         name = QLineEdit(label)
         name.setPlaceholderText("阶段名称")
-        # ⚠️ 新增限制：限制最大输入长度为 30 个字符（足够涵盖绝大多数场景）
         name.setMaxLength(30) 
         h.addWidget(name, 2)
         
@@ -878,18 +860,16 @@ class SettingsWindow(QDialog):
         self._stage_rows.append(row)
         self._stage_vlay.addWidget(row_widget)
 
-    def _rebuild_stage_rows(self):
+    def _rebuild_stage_rows(self) -> None:
         self._rebuild_rows(self._stage_vlay, self._stage_rows,
                            lambda r: self._add_stage_row(r["name"].text(), r["spin"].value(), r["unit_cmb"].currentText()))
 
-    def _add_alert_row(self, seconds=20, color="#ffaa00", play_sound=True):
+    def _add_alert_row(self, seconds: int = 20, color: str = "#ffaa00", play_sound: bool = True) -> None:
         row_widget = QWidget()
         h = QHBoxLayout(row_widget)
         h.setContentsMargins(0, 6, 0, 6)
         
-        lbl = QLabel("剩余：")
-        h.addWidget(lbl)
-        
+        h.addWidget(QLabel("剩余："))
         spin = QSpinBox()
         spin.setRange(1, 9999)
         spin.setSuffix(" 秒")
@@ -900,7 +880,7 @@ class SettingsWindow(QDialog):
         cbtn = QPushButton()
         cbtn.setFixedSize(28, 28)
         cbtn.setCursor(Qt.PointingHandCursor)
-        cbtn.setStyleSheet(f"background:{color}; border:1px solid #bbb; border-radius:4px;")
+        self._set_color_preview(cbtn, color)
         
         chk_sound = QCheckBox("触发声音")
         chk_sound.setChecked(play_sound)
@@ -919,17 +899,17 @@ class SettingsWindow(QDialog):
         self._alert_rows.append(row)
         self._alert_vlay.addWidget(row_widget)
 
-    def _pick_alert_color(self, row: dict):
+    def _pick_alert_color(self, row: dict) -> None:
         c = QColorDialog.getColor(QColor(row["color"]), self)
         if c.isValid():
             row["color"] = c.name()
-            row["cbtn"].setStyleSheet(f"background:{c.name()}; border:1px solid #bbb; border-radius:4px;")
+            self._set_color_preview(row["cbtn"], c.name())
 
-    def _rebuild_alert_rows(self):
+    def _rebuild_alert_rows(self) -> None:
         self._rebuild_rows(self._alert_vlay, self._alert_rows,
                            lambda r: self._add_alert_row(r["spin"].value(), r["color"], r["chk_sound"].isChecked()))
 
-    def _add_row_controls(self, layout, rows, row, rebuild_fn):
+    def _add_row_controls(self, layout: QHBoxLayout, rows: list, row: dict, rebuild_fn) -> None:
         btn_style = "background:#f5f6fa; color:#444; border:1px solid #dcdde1; border-radius:4px; font-size:14px; padding:0;"
         for icon, tip, delta in (("↑", "上移", -1), ("↓", "下移", 1)):
             b = QPushButton(icon)
@@ -948,19 +928,19 @@ class SettingsWindow(QDialog):
         btn_del.clicked.connect(partial(self._delete_row, rows, row, rebuild_fn))
         layout.addWidget(btn_del)
 
-    def _move_row(self, rows: list, row: dict, delta: int, rebuild_fn):
+    def _move_row(self, rows: list, row: dict, delta: int, rebuild_fn) -> None:
         idx = rows.index(row)
         new_idx = idx + delta
         if 0 <= new_idx < len(rows):
             rows[idx], rows[new_idx] = rows[new_idx], rows[idx]
             rebuild_fn()
 
-    def _delete_row(self, rows: list, row: dict, rebuild_fn):
+    def _delete_row(self, rows: list, row: dict, rebuild_fn) -> None:
         if len(rows) > 1:
             rows.remove(row)
             rebuild_fn()
 
-    def _rebuild_rows(self, layout: QLayout, rows: list, add_fn):
+    def _rebuild_rows(self, layout: QVBoxLayout, rows: list, add_fn) -> None:
         saved = list(rows)
         rows.clear()
         while layout.count():
@@ -968,20 +948,16 @@ class SettingsWindow(QDialog):
             if w: w.deleteLater()
         for r in saved: add_fn(r)
 
-    def _pick_color(self):
-        c = QColorDialog.getColor(QColor(self._cur_color), self)
+    def _pick_color(self, label: QLabel, attr_name: str) -> None:
+        current_color = getattr(self, attr_name)
+        c = QColorDialog.getColor(QColor(current_color), self)
         if c.isValid():
-            self._cur_color = c.name()
-            self._set_color_preview(self._color_preview, c.name())
+            setattr(self, attr_name, c.name())
+            self._set_color_preview(label, c.name())
 
-    def _pick_bg_color(self):
-        c = QColorDialog.getColor(QColor(self._cur_bg_color), self)
-        if c.isValid():
-            self._cur_bg_color = c.name()
-            self._set_color_preview(self._bg_color_preview, c.name())
-
-    def _set_color_preview(self, label: QLabel, color: str):
-        label.setStyleSheet(f"background:{color}; border:1px solid #bbb; border-radius:4px;")
+    @staticmethod
+    def _set_color_preview(widget: QWidget, color: str) -> None:
+        widget.setStyleSheet(f"background:{color}; border:1px solid #bbb; border-radius:4px;")
 
     def get_config(self) -> Config:
         self.config.auto_advance = self.chk_auto_advance.isChecked()
@@ -1005,10 +981,6 @@ class SettingsWindow(QDialog):
         
         return self.config
 
-
-# ================================================================
-#  主应用协调器
-# ================================================================
 class App(QObject):
     def __init__(self):
         super().__init__()
@@ -1028,7 +1000,7 @@ class App(QObject):
         self.float_bar.move(screen.left() + 20, screen.top() + 20)
         self.float_bar.show()
 
-    def _connect_signals(self):
+    def _connect_signals(self) -> None:
         fb = self.float_bar
         ctrl = self.controller
         
@@ -1046,11 +1018,11 @@ class App(QObject):
         ctrl.loop_restarted.connect(lambda: fb.start_flash("#44aaff", 1500))
         ctrl.state_changed.connect(fb.set_running)
 
-    def _apply_style(self):
+    def _apply_style(self) -> None:
         c = self.config
         self.float_bar.apply_style(c.color, c.font, c.font_size, c.opacity, c.bg_qcolor())
 
-    def _apply_shortcuts(self):
+    def _apply_shortcuts(self) -> None:
         for sc in self._shortcuts:
             sc.setEnabled(False)
             sc.deleteLater()
@@ -1070,7 +1042,7 @@ class App(QObject):
                 sc.activated.connect(slot_func)
                 self._shortcuts.append(sc)
 
-    def _open_settings(self):
+    def _open_settings(self) -> None:
         dlg = SettingsWindow(self.config)
         dlg.btn_save.clicked.connect(lambda: self._save_settings(dlg))
         fb_geo = self.float_bar.geometry()
@@ -1084,7 +1056,7 @@ class App(QObject):
         dlg.exec_()
         dlg.deleteLater()
 
-    def _save_settings(self, dlg: SettingsWindow):
+    def _save_settings(self, dlg: SettingsWindow) -> None:
         dlg.get_config()
         self.config.save()
         self._apply_style()
@@ -1093,16 +1065,46 @@ class App(QObject):
         self.controller.stop() 
         dlg.accept()
 
-    def _exit(self):
+    def _exit(self) -> None:
+        """彻底安全释放所有资源，无残留退出"""
         self.controller.stop()
+        for sc in self._shortcuts:
+            sc.setEnabled(False)
+            sc.deleteLater()
+        self._shortcuts.clear()
+        
         self.float_bar.close()
         QApplication.quit()
 
 
 if __name__ == "__main__":
+    # 高分屏及抗锯齿渲染支持
+    if hasattr(Qt, 'AA_EnableHighDpiScaling'):
+        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
+        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setApplicationName(APP_NAME)
     app.setQuitOnLastWindowClosed(False)
+    
+    # 工业级单例模式：阻止应用多开重叠
+    shared_mem_key = f"{APP_NAME}_SingleInstance_MemoryLock"
+    shared_mem = QSharedMemory(shared_mem_key)
+    
+    if shared_mem.attach():
+        # 如果已经存在实例，直接静默安全退出
+        sys.exit(0)
+    else:
+        # 创建 1 byte 内存锁占位
+        shared_mem.create(1) 
+
     main = App()
-    sys.exit(app.exec_())
+    
+    # 监听退出并清理内存锁
+    exit_code = app.exec_()
+    if shared_mem.isAttached():
+        shared_mem.detach()
+        
+    sys.exit(exit_code)
