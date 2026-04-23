@@ -36,7 +36,7 @@ if not exist "%SOURCE_FILE%" (
 :: 3. 创建/激活虚拟环境
 if not exist "%VENV_DIR%" (
     echo [1/4] 正在创建隔离的虚拟环境，请稍候...
-    python -m venp %VENV_DIR%
+    python -m venv %VENV_DIR%
 ) else (
     echo [1/4] 检测到已有虚拟环境，跳过创建...
 )

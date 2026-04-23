@@ -1,8 +1,8 @@
 # version_info.txt (UTF-8 编码)
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 2, 0),    # 文件版本 (主,次,修订,构建)
-    prodvers=(1, 0, 2, 0),    # 产品版本
+    filevers=(1, 0, 3, 0),    # 文件版本 (主,次,修订,构建)
+    prodvers=(1, 0, 3, 0),    # 产品版本
     mask=0x3F,
     flags=0x0,
     OS=0x4,
@@ -18,12 +18,12 @@ VSVersionInfo(
           [
             StringStruct(u'CompanyName', u''), #公司名称
             StringStruct(u'FileDescription', u'一款极简风格计时器。'),
-            StringStruct(u'FileVersion', u'1.0.2'),
+            StringStruct(u'FileVersion', u'1.0.3'),
             StringStruct(u'InternalName', u'QTimer'),
             StringStruct(u'LegalCopyright', u'© 2026 QwejayHuang 版权所有'),
             StringStruct(u'OriginalFilename', u'QTimer.exe'),
             StringStruct(u'ProductName', u'QTimer计时器'),
-            StringStruct(u'ProductVersion', u'1.0.2')
+            StringStruct(u'ProductVersion', u'1.0.3')
           ])
       ]),
     VarFileInfo([VarStruct(u'Translation', [2052, 1200])])  # 简体中文

@@ -1,0 +1,87 @@
+name: Build and Release QTimer
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  push:
+    branches: [ "main", "master" ]  # 推送普通代码时：只打包出 Artifacts
+    tags: [ 'v*' ]                  # 推送版本号时 (如 git push origin v1.0.4)：执行打包 + 自动发布 Release
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:                # 允许手动点击运行
+
+jobs:
+  build:
+    name: Build Windows Executable
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          if (Test-Path "requirements.txt") {
+              echo "Found requirements.txt, installing..."
+              pip install -r requirements.txt
+          } else {
+              echo "No requirements.txt found, installing base dependencies..."
+              pip install pyinstaller PyQt5
+          }
+
+      - name: Build with PyInstaller
+        shell: pwsh
+        run: |
+          $ICON_CMD = ""
+          if (Test-Path "icon.ico") { 
+              echo "Detected icon.ico, adding to build."
+              $ICON_CMD = "--icon=icon.ico" 
+          }
+
+          $VERSION_CMD = ""
+          if (Test-Path "version.txt") { 
+              echo "Detected version.txt, adding to build."
+              $VERSION_CMD = "--version-file=version.txt" 
+          }
+
+          pyinstaller -F -w --clean --noconfirm -n "QTimer" $ICON_CMD $VERSION_CMD QTimer.py
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QTimer-Windows-Portable
+          path: dist/QTimer.exe
+          retention-days: 30
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    # 核心判断：只有当前触发是因为推送了 Tags 才会执行此任务
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: QTimer-Windows-Portable
+          path: ./dist
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./dist/QTimer.exe
+          generate_release_notes: true  # 自动读取 commit 记录生成更新日志
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
