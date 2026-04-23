@@ -1,32 +1,32 @@
 name: Build and Release QTimer
 
-# 触发条件
+# 主动启用 Node.js 24，彻底消除旧版废弃警告
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   push:
-    branches: [ "main", "master" ]  # 推送到主分支时触发
-    tags: [ 'v*' ]                  # 当推送 v1.0.4 这样的 tag 时触发自动发布
+    branches: [ "main", "master" ]  # 推送普通代码时：只打包出 Artifacts
+    tags: [ 'v*' ]                  # 推送版本号时 (如 git push origin v1.0.4)：执行打包 + 自动发布 Release
   pull_request:
     branches: [ "main", "master" ]
-  workflow_dispatch:                # 允许在 Actions 页面手动点击运行
+  workflow_dispatch:                # 允许手动点击运行
 
 jobs:
   build:
     name: Build Windows Executable
-    runs-on: windows-latest         # 必须使用 Windows 运行器才能打包 exe
+    runs-on: windows-latest
 
     steps:
-      # 1. 获取最新代码
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 2. 配置 Python 环境
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'     # Python 3.9 对 PyQt5 和 PyInstaller 兼容性极佳
+          python-version: '3.9'
           cache: 'pip'
 
-      # 3. 安装依赖库 (复刻 cmd 中的逻辑)
       - name: Install Dependencies
         shell: pwsh
         run: |
@@ -39,7 +39,6 @@ jobs:
               pip install pyinstaller PyQt5
           }
 
-      # 4. 使用 PyInstaller 打包 (包含智能图标和版本探测逻辑)
       - name: Build with PyInstaller
         shell: pwsh
         run: |
@@ -55,10 +54,8 @@ jobs:
               $VERSION_CMD = "--version-file=version.txt" 
           }
 
-          # 核心打包命令
           pyinstaller -F -w --clean --noconfirm -n "QTimer" $ICON_CMD $VERSION_CMD QTimer.py
 
-      # 5. 上传构建结果作为 Artifact (可在 Actions 页面直接下载)
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -66,27 +63,25 @@ jobs:
           path: dist/QTimer.exe
           retention-days: 30
 
-  # 自动发布流程 (仅在打 Tag 时触发)
   release:
     name: Create GitHub Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/') # 只有推送 v* 标签才会执行
+    # 核心判断：只有当前触发是因为推送了 Tags 才会执行此任务
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     
     steps:
-      # 下载上一步构建好的 exe
       - name: Download Artifact
         uses: actions/download-artifact@v4
         with:
           name: QTimer-Windows-Portable
           path: ./dist
 
-      # 自动创建 Release 并附加 exe 文件
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: ./dist/QTimer.exe
-          generate_release_notes: true
+          generate_release_notes: true  # 自动读取 commit 记录生成更新日志
           draft: false
           prerelease: false
         env:
