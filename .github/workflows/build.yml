@@ -3,7 +3,7 @@ name: Build and Release QTimer
 on:
   push:
     branches: [ "main", "master" ]
-    tags: [ 'v*' ] # 匹配 v1.1.0, v2.0 等标签
+    tags: [ 'v*' ]
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
@@ -31,7 +31,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller PyQt5
 
-<<<<<<< HEAD
       - name: Run PyInstaller
         shell: pwsh
         run: |
@@ -40,34 +39,10 @@ jobs:
           if (Test-Path "version.txt") { $buildParams += "--version-file=version.txt" }
           $buildParams += "QTimer.py"
           & pyinstaller $buildParams
-=======
-      - name: Determine Version
-        id: get_version
-        shell: pwsh
-        run: |
-          # 获取 Git 引用名称（如 v1.1.0 或 main）
-          $ref = "${{ github.ref_name }}"
-          # 如果不是通过 tag 触发的（比如直接 push main），则标记为 dev 版
-          if ("${{ github.ref_type }}" -ne "tag") {
-              $ref = "dev-$ref"
-          }
-          echo "VER=$ref" >> $env:GITHUB_OUTPUT
-          echo "Using Version: $ref"
-
-      - name: Build with PyInstaller
-        shell: pwsh
-        run: |
-          $ICON_CMD = if (Test-Path "icon.ico") { "--icon=icon.ico" } else { "" }
-          $VERSION_CMD = if (Test-Path "version.txt") { "--version-file=version.txt" } else { "" }
-          
-          # 执行打包
-          pyinstaller -F -w --clean --noconfirm -n "QTimer" $ICON_CMD $VERSION_CMD QTimer.py
->>>>>>> parent of 54ba903 (v1.1.0)
 
       - name: Prepare Artifacts
         shell: pwsh
         run: |
-<<<<<<< HEAD
           # 获取版本号 (Tag 名)
           $VER = "${{ github.ref_name }}"
           if ("${{ github.ref_type }}" -ne "tag") { $VER = "dev" }
@@ -86,26 +61,11 @@ jobs:
           
           Write-Host "File created: $EXE_NAME"
           Write-Host "File created: $ZIP_NAME"
-=======
-          $VERSION = "${{ steps.get_version.outputs.VER }}"
-          New-Item -ItemType Directory -Force -Path "out"
-          
-          # 根据你提交的 Tag 动态命名
-          $EXE_NAME = "QTimer_$VERSION.exe"
-          $ZIP_NAME = "QTimer_$VERSION_Portable.zip"
-          
-          Move-Item "dist/QTimer.exe" "out/$EXE_NAME"
-          Compress-Archive -Path "out/$EXE_NAME" -DestinationPath "out/$ZIP_NAME"
->>>>>>> parent of 54ba903 (v1.1.0)
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-<<<<<<< HEAD
           name: QTimer-Build-Asset
-=======
-          name: QTimer-Build-${{ steps.get_version.outputs.VER }}
->>>>>>> parent of 54ba903 (v1.1.0)
           path: out/*
           retention-days: 1
 
@@ -119,11 +79,7 @@ jobs:
       - name: Download Artifact
         uses: actions/download-artifact@v4
         with:
-<<<<<<< HEAD
           name: QTimer-Build-Asset
-=======
-          name: QTimer-Build-${{ github.ref_name }}
->>>>>>> parent of 54ba903 (v1.1.0)
           path: ./release_files
 
       - name: Create Release
@@ -132,9 +88,7 @@ jobs:
           files: |
             release_files/*.exe
             release_files/*.zip
-          # Release 标题直接显示你输入的 Tag 名
           name: QTimer ${{ github.ref_name }}
-<<<<<<< HEAD
           # 这样写会让 Release 页面非常干净专业
           body: |
             ## 🚀 QTimer ${{ github.ref_name }} 正式发布
@@ -145,16 +99,6 @@ jobs:
             
             ---
             *此版本由 GitHub Actions 自动构建生成。*
-=======
-          body: |
-            ## 🚀 QTimer ${{ github.ref_name }} 正式发布
-            
-            ### 📦 包含文件
-            - `QTimer_${{ github.ref_name }}.exe`: 绿色单文件版
-            - `QTimer_${{ github.ref_name }}_Portable.zip`: 压缩包版（推荐）
-            
-            > 此版本完全由 GitHub Actions 自动化构建。
->>>>>>> parent of 54ba903 (v1.1.0)
           generate_release_notes: true
           draft: false
           prerelease: false
