@@ -1,15 +1,19 @@
 name: Build and Release QTimer
 
 env:
+  # 解决一些环境下的 Node 版本兼容警告
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 on:
   push:
-    branches: [ "main", "master" ]  # 推送普通代码时：只打包出 Artifacts
-    tags: [ 'v*' ]                  # 推送版本号时 (如 git push origin v1.0.4)：执行打包 + 自动发布 Release
+    branches: [ "main", "master" ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ "main", "master" ]
-  workflow_dispatch:                # 允许手动点击运行
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -30,42 +34,53 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          if (Test-Path "requirements.txt") {
-              echo "Found requirements.txt, installing..."
-              pip install -r requirements.txt
+          pip install pyinstaller PyQt5
+
+      - name: Extract Version Info
+        id: get_version
+        shell: pwsh
+        run: |
+          # 从源代码中自动提取 APP_VERSION 变量的值
+          $versionLine = Get-Content QTimer.py | Select-String 'APP_VERSION = "(.*)"'
+          if ($versionLine -match '"(.*)"') {
+              $ver = $matches[1]
+              echo "VERSION=$ver" >> $env:GITHUB_OUTPUT
+              echo "Detected Version: $ver"
           } else {
-              echo "No requirements.txt found, installing base dependencies..."
-              pip install pyinstaller PyQt5
+              echo "VERSION=1.1.0" >> $env:GITHUB_OUTPUT
           }
 
       - name: Build with PyInstaller
         shell: pwsh
         run: |
           $ICON_CMD = ""
-          if (Test-Path "icon.ico") { 
-              echo "Detected icon.ico, adding to build."
-              $ICON_CMD = "--icon=icon.ico" 
-          }
+          if (Test-Path "icon.ico") { $ICON_CMD = "--icon=icon.ico" }
 
           $VERSION_CMD = ""
-          if (Test-Path "version.txt") { 
-              echo "Detected version.txt, adding to build."
-              $VERSION_CMD = "--version-file=version.txt" 
-          }
+          if (Test-Path "version.txt") { $VERSION_CMD = "--version-file=version.txt" }
 
+          # 构建 EXE
           pyinstaller -F -w --clean --noconfirm -n "QTimer" $ICON_CMD $VERSION_CMD QTimer.py
 
-      - name: Upload Artifact
+      - name: Prepare Artifacts
+        shell: pwsh
+        run: |
+          $VER = "${{ steps.get_version.outputs.VERSION }}"
+          # 重命名文件以便于识别版本
+          Move-Item "dist/QTimer.exe" "dist/QTimer_$VER.exe"
+          # 创建 ZIP 压缩包 (标准便携版格式)
+          Compress-Archive -Path "dist/QTimer_$VER.exe" -DestinationPath "dist/QTimer_$VER_Portable.zip"
+
+      - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: QTimer-Windows-Portable
-          path: dist/QTimer.exe
-          retention-days: 30
+          name: QTimer-Windows-Binary
+          path: dist/QTimer_*.exe
+          retention-days: 7
 
   release:
     name: Create GitHub Release
     needs: build
-    # 核心判断：只有当前触发是因为推送了 Tags 才会执行此任务
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     
@@ -73,14 +88,30 @@ jobs:
       - name: Download Artifact
         uses: actions/download-artifact@v4
         with:
-          name: QTimer-Windows-Portable
-          path: ./dist
+          name: QTimer-Windows-Binary
+          path: ./release_files
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ./dist/QTimer.exe
-          generate_release_notes: true  # 自动读取 commit 记录生成更新日志
+          # 同时上传 EXE 和 ZIP
+          files: |
+            release_files/QTimer_*.exe
+            release_files/QTimer_*_Portable.zip
+          name: QTimer ${{ github.ref_name }} (Final Release)
+          body: |
+            ## 🚀 QTimer 正式版发布
+            
+            这是自动构建的最新便携版。
+            
+            ### 🛠️ 构建信息
+            - **版本**: ${{ github.ref_name }}
+            - **平台**: Windows (x64)
+            - **构建时间**: ${{ github.event.head_commit.timestamp }}
+            
+            ### 📦 文件说明
+            - `.exe`: 独立运行文件。
+            - `.zip`: 压缩包格式，建议下载此版本以减少浏览器拦截。
           draft: false
           prerelease: false
         env:
