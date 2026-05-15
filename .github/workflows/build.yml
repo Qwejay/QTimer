@@ -1,13 +1,9 @@
 name: Build and Release QTimer
 
-env:
-  # 解决一些环境下的 Node 版本兼容警告
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 on:
   push:
     branches: [ "main", "master" ]
-    tags: [ 'v*' ]
+    tags: [ 'v*' ] # 匹配 v1.1.0, v2.0 等标签
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
@@ -18,7 +14,7 @@ permissions:
 jobs:
   build:
     name: Build Windows Executable
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
       - name: Checkout Code
@@ -31,51 +27,50 @@ jobs:
           cache: 'pip'
 
       - name: Install Dependencies
-        shell: pwsh
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller PyQt5
 
-      - name: Extract Version Info
+      - name: Determine Version
         id: get_version
         shell: pwsh
         run: |
-          # 从源代码中自动提取 APP_VERSION 变量的值
-          $versionLine = Get-Content QTimer.py | Select-String 'APP_VERSION = "(.*)"'
-          if ($versionLine -match '"(.*)"') {
-              $ver = $matches[1]
-              echo "VERSION=$ver" >> $env:GITHUB_OUTPUT
-              echo "Detected Version: $ver"
-          } else {
-              echo "VERSION=1.1.0" >> $env:GITHUB_OUTPUT
+          # 获取 Git 引用名称（如 v1.1.0 或 main）
+          $ref = "${{ github.ref_name }}"
+          # 如果不是通过 tag 触发的（比如直接 push main），则标记为 dev 版
+          if ("${{ github.ref_type }}" -ne "tag") {
+              $ref = "dev-$ref"
           }
+          echo "VER=$ref" >> $env:GITHUB_OUTPUT
+          echo "Using Version: $ref"
 
       - name: Build with PyInstaller
         shell: pwsh
         run: |
-          $ICON_CMD = ""
-          if (Test-Path "icon.ico") { $ICON_CMD = "--icon=icon.ico" }
-
-          $VERSION_CMD = ""
-          if (Test-Path "version.txt") { $VERSION_CMD = "--version-file=version.txt" }
-
-          # 构建 EXE
+          $ICON_CMD = if (Test-Path "icon.ico") { "--icon=icon.ico" } else { "" }
+          $VERSION_CMD = if (Test-Path "version.txt") { "--version-file=version.txt" } else { "" }
+          
+          # 执行打包
           pyinstaller -F -w --clean --noconfirm -n "QTimer" $ICON_CMD $VERSION_CMD QTimer.py
 
       - name: Prepare Artifacts
         shell: pwsh
         run: |
-          $VER = "${{ steps.get_version.outputs.VERSION }}"
-          # 重命名文件以便于识别版本
-          Move-Item "dist/QTimer.exe" "dist/QTimer_$VER.exe"
-          # 创建 ZIP 压缩包 (标准便携版格式)
-          Compress-Archive -Path "dist/QTimer_$VER.exe" -DestinationPath "dist/QTimer_$VER_Portable.zip"
+          $VERSION = "${{ steps.get_version.outputs.VER }}"
+          New-Item -ItemType Directory -Force -Path "out"
+          
+          # 根据你提交的 Tag 动态命名
+          $EXE_NAME = "QTimer_$VERSION.exe"
+          $ZIP_NAME = "QTimer_$VERSION_Portable.zip"
+          
+          Move-Item "dist/QTimer.exe" "out/$EXE_NAME"
+          Compress-Archive -Path "out/$EXE_NAME" -DestinationPath "out/$ZIP_NAME"
 
-      - name: Upload Build Artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: QTimer-Windows-Binary
-          path: dist/QTimer_*.exe
+          name: QTimer-Build-${{ steps.get_version.outputs.VER }}
+          path: out/*
           retention-days: 7
 
   release:
@@ -88,30 +83,26 @@ jobs:
       - name: Download Artifact
         uses: actions/download-artifact@v4
         with:
-          name: QTimer-Windows-Binary
+          name: QTimer-Build-${{ github.ref_name }}
           path: ./release_files
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          # 同时上传 EXE 和 ZIP
           files: |
-            release_files/QTimer_*.exe
-            release_files/QTimer_*_Portable.zip
-          name: QTimer ${{ github.ref_name }} (Final Release)
+            release_files/*.exe
+            release_files/*.zip
+          # Release 标题直接显示你输入的 Tag 名
+          name: QTimer ${{ github.ref_name }}
           body: |
-            ## 🚀 QTimer 正式版发布
+            ## 🚀 QTimer ${{ github.ref_name }} 正式发布
             
-            这是自动构建的最新便携版。
+            ### 📦 包含文件
+            - `QTimer_${{ github.ref_name }}.exe`: 绿色单文件版
+            - `QTimer_${{ github.ref_name }}_Portable.zip`: 压缩包版（推荐）
             
-            ### 🛠️ 构建信息
-            - **版本**: ${{ github.ref_name }}
-            - **平台**: Windows (x64)
-            - **构建时间**: ${{ github.event.head_commit.timestamp }}
-            
-            ### 📦 文件说明
-            - `.exe`: 独立运行文件。
-            - `.zip`: 压缩包格式，建议下载此版本以减少浏览器拦截。
+            > 此版本完全由 GitHub Actions 自动化构建。
+          generate_release_notes: true
           draft: false
           prerelease: false
         env:
