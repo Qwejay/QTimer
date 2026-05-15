@@ -1,4 +1,4 @@
-# ⏱️ QTimer V1.1.0 - 极简流线型桌面悬浮计时器 (Final Release)
+# ⏱️ QTimer V1.1.0 - 极简流线型桌面悬浮计时器
 
 ![Python Version](https://img.shields.io/badge/Python-3.7+-blue.svg)
 ![PyQt5](https://img.shields.io/badge/PyQt5-Supported-brightgreen.svg)
