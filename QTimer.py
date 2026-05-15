@@ -6,6 +6,7 @@ import threading
 import subprocess
 import time
 import math
+import ctypes
 from dataclasses import dataclass, asdict
 from functools import partial
 from typing import Dict, List, Optional
@@ -16,35 +17,47 @@ from PyQt5.QtGui import *
 from PyQt5.QtSvg import QSvgRenderer
 
 APP_NAME = "QTimer"
-APP_VERSION = "Final Release V1.0.4"
+APP_VERSION = "Final Release V1.1"
 
-# ================================================================
-#  工具系统：路径探测与原子化保存 (工业级防损毁)
-# ================================================================
 def get_app_dir() -> str:
-    """获取程序当前所在目录，完美兼容 PyInstaller 打包后的环境"""
     if getattr(sys, 'frozen', False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
 def get_config_path() -> str:
-    """智能探测配置保存路径，具备权限降级机制"""
     local_path = os.path.join(get_app_dir(), f".{APP_NAME.lower()}_config.json")
     try:
-        # 测试当前目录的写入权限
         with open(local_path, 'a', encoding="utf-8"): 
             pass
         return local_path
     except PermissionError:
-        # 如果放在 C盘系统目录等无权写入的区域，自动降级到 User 目录
         user_path = os.path.join(os.path.expanduser("~"), f".{APP_NAME.lower()}_config.json")
         return user_path
 
 CONFIG_PATH = get_config_path()
 
 # ================================================================
-#  原生声音播放器 (安全防阻塞)
+#  PPT 全屏放映探测器 (防误触引擎)
 # ================================================================
+def is_ppt_slideshow_active() -> bool:
+    """仅在 Windows 下探测是否处于 PPT / WPS 的全屏放映模式"""
+    if platform.system() != "Windows":
+        return False
+    try:
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        if not hwnd: return False
+        
+        buf = ctypes.create_unicode_buffer(256)
+        ctypes.windll.user32.GetClassNameW(hwnd, buf, 256)
+        cls_name = buf.value
+        
+        if cls_name == "screenClass" or "wpp_screen" in cls_name.lower() or cls_name == "WPP_Slide_Show":
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def play_alert_sound(duration_ms: int = 200) -> None:
     sys_name = platform.system()
     
@@ -57,7 +70,7 @@ def play_alert_sound(duration_ms: int = 200) -> None:
                 pass
         threading.Thread(target=_beep, daemon=True).start()
         
-    elif sys_name == "Darwin":  # macOS
+    elif sys_name == "Darwin":  
         def _mac_beep():
             try:
                 if duration_ms > 1000:
@@ -72,9 +85,6 @@ def play_alert_sound(duration_ms: int = 200) -> None:
     else:
         QApplication.beep()
 
-# ================================================================
-#  SVG 图标内存缓存池 (极致性能渲染)
-# ================================================================
 SVG_ICONS: Dict[str, str] = {
     "play":     '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><polygon points="6,4 20,12 6,20" fill="{color}"/></svg>',
     "pause":    '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="5" y="4" width="4" height="16" rx="1" fill="{color}"/><rect x="15" y="4" width="4" height="16" rx="1" fill="{color}"/></svg>',
@@ -106,15 +116,12 @@ def get_svg_icon(name: str, size: int, color: str = "white") -> QIcon:
     _ICON_CACHE[cache_key] = icon
     return icon
 
-
-# ================================================================
-#  核心数据结构
-# ================================================================
 @dataclass
 class Stage:
     label: str = "说课时间"
     duration: int = 5
     unit: str = "分"
+    count_up: bool = False
 
     @property
     def seconds(self) -> int:
@@ -123,8 +130,8 @@ class Stage:
     @classmethod
     def from_dict(cls, d: dict) -> 'Stage':
         if "minutes" in d and "duration" not in d:
-            return cls(label=d.get("label", ""), duration=d["minutes"], unit="分")
-        return cls(label=d.get("label", ""), duration=d.get("duration", 5), unit=d.get("unit", "分"))
+            return cls(label=d.get("label", ""), duration=d["minutes"], unit="分", count_up=d.get("count_up", False))
+        return cls(label=d.get("label", ""), duration=d.get("duration", 5), unit=d.get("unit", "分"), count_up=d.get("count_up", False))
 
 @dataclass
 class Alert:
@@ -141,8 +148,12 @@ class Config:
         self.auto_advance: bool = False        
         self.global_sound: bool = True          
         self.countdown_10s_sound: bool = True  
+        self.always_on_top: bool = True         
+        self.prevent_offscreen: bool = True     
+        self.show_stage_label: bool = True      
+        self.ppt_auto_start: bool = True
 
-        self.stages: List[Stage] = [Stage("说课时间", 5, "分"), Stage("答辩时间", 2, "分")]
+        self.stages: List[Stage] = [Stage("说课时间", 5, "分", False), Stage("答辩时间", 2, "分", False)]
         self.alerts: List[Alert] = [Alert(30, "#ffaa00", True), Alert(10, "#ff4444", True)]
         
         self.color: str = "#ffffff"
@@ -162,6 +173,10 @@ class Config:
             "auto_advance": self.auto_advance,
             "global_sound": self.global_sound,
             "countdown_10s_sound": self.countdown_10s_sound,
+            "always_on_top": self.always_on_top,
+            "prevent_offscreen": self.prevent_offscreen,
+            "show_stage_label": self.show_stage_label,
+            "ppt_auto_start": self.ppt_auto_start,
             "stages": [asdict(s) for s in self.stages],
             "alerts": [asdict(a) for a in self.alerts],
             "color": self.color, "font": self.font,
@@ -171,7 +186,6 @@ class Config:
             "shortcut_prev": self.shortcut_prev, "shortcut_next": self.shortcut_next,
         }
         try:
-            # 原子化保存操作：先写入临时文件，成功后再覆盖，防止配置损毁
             tmp_path = CONFIG_PATH + ".tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -188,6 +202,10 @@ class Config:
             self.auto_advance = d.get("auto_advance", self.auto_advance)
             self.global_sound = d.get("global_sound", self.global_sound)
             self.countdown_10s_sound = d.get("countdown_10s_sound", self.countdown_10s_sound)
+            self.always_on_top = d.get("always_on_top", self.always_on_top)
+            self.prevent_offscreen = d.get("prevent_offscreen", self.prevent_offscreen)
+            self.show_stage_label = d.get("show_stage_label", self.show_stage_label)
+            self.ppt_auto_start = d.get("ppt_auto_start", self.ppt_auto_start)
             
             stages = [Stage.from_dict(s) for s in d.get("stages", [])]
             if stages: self.stages = stages
@@ -214,10 +232,6 @@ class Config:
         c.setAlpha(int(self.bg_opacity / 100 * 255))
         return c
 
-
-# ================================================================
-#  无误差精确计时控制器 (Drift-Free Engine)
-# ================================================================
 class TimerController(QObject):
     tick = pyqtSignal(str, int)
     stage_changed = pyqtSignal(int, str)
@@ -265,6 +279,8 @@ class TimerController(QObject):
         self._stop_and_wait()
 
     def prev_stage(self) -> None:
+        if not self.config.stages:
+            return
         self._stage_idx = (self._stage_idx - 1) % len(self.config.stages)
         self._load_stage()
         self._stop_and_wait()
@@ -297,7 +313,7 @@ class TimerController(QObject):
         self._zero_triggered = False
         
         self.stage_changed.emit(self._stage_idx, st.label)
-        self.tick.emit(st.label, st.seconds)
+        self.tick.emit(st.label, 0 if st.count_up else st.seconds)
 
     def _tick(self) -> None:
         if self.paused or not self.config.stages:
@@ -305,18 +321,21 @@ class TimerController(QObject):
 
         now = time.time()
         self._remaining_float = self._target_time - now
-        display_sec = max(0, int(math.ceil(self._remaining_float)))
+        rem_sec = max(0, int(math.ceil(self._remaining_float)))
 
-        if display_sec != self._last_displayed:
-            self._last_displayed = display_sec
-            self.tick.emit(self.config.stages[self._stage_idx].label, display_sec)
+        if rem_sec != self._last_displayed:
+            self._last_displayed = rem_sec
+            st = self.config.stages[self._stage_idx]
+            
+            display_sec = max(0, st.seconds - rem_sec) if st.count_up else rem_sec
+            self.tick.emit(st.label, display_sec)
 
             if self.config.global_sound:
-                if self.config.countdown_10s_sound and 0 < display_sec <= 10:
+                if self.config.countdown_10s_sound and 0 < rem_sec <= 10:
                     play_alert_sound(200)
 
                 for a in self.config.alerts:
-                    if display_sec == a.seconds and a.seconds not in self._triggered:
+                    if rem_sec == a.seconds and a.seconds not in self._triggered:
                         self._triggered.add(a.seconds)
                         self.alert_triggered.emit(a.color)
                         if a.play_sound:
@@ -344,10 +363,6 @@ class TimerController(QObject):
             self._stage_idx = 0
             self.loop_restarted.emit()
 
-
-# ================================================================
-#  浮动计时条 (高精动画层)
-# ================================================================
 class FloatBar(QWidget):
     request_settings = pyqtSignal()
     request_exit = pyqtSignal()
@@ -356,7 +371,7 @@ class FloatBar(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_Hover)
@@ -367,6 +382,8 @@ class FloatBar(QWidget):
         self._font_family = "微软雅黑"
         self._font_size = 32
         self._bg_color = QColor(20, 20, 20, 210)
+        self._show_stage_label = True
+        self._prevent_offscreen = True
                
         self._current_stage_text = ""
         self._text_width = 150
@@ -416,7 +433,8 @@ class FloatBar(QWidget):
         self.lbl_time.setAlignment(Qt.AlignCenter)
 
         self._layout.addWidget(self.lbl_stage)
-        self._layout.addSpacing(12)
+        self._spacing_item = QSpacerItem(12, 0, QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._layout.addItem(self._spacing_item)
         self._layout.addWidget(self.lbl_time)
         self._layout.addSpacing(18)
 
@@ -425,10 +443,10 @@ class FloatBar(QWidget):
         btn_lay.setContentsMargins(0, 0, 0, 0)
         btn_lay.setSpacing(2)
 
-        self.btn_toggle = self._make_icon_btn("play", "开始/暂停")
+        self.btn_toggle = self._make_icon_btn("play", "播放 / 暂停")
         self.btn_restart = self._make_icon_btn("restart", "重置当前环节")
-        self.btn_prev = self._make_icon_btn("prev", "上一阶段")
-        self.btn_next = self._make_icon_btn("next", "下一阶段")
+        self.btn_prev = self._make_icon_btn("prev", "上一环节")
+        self.btn_next = self._make_icon_btn("next", "下一环节")
         self.btn_settings = self._make_icon_btn("settings", "设置")
         self.btn_close = self._make_icon_btn("close", "退出")
 
@@ -457,12 +475,28 @@ class FloatBar(QWidget):
         """)
         return b
 
-    def apply_style(self, color: str, font: str, size: int, opacity: float, bg_color: QColor) -> None:
+    def apply_style(self, color: str, font: str, size: int, opacity: float, bg_color: QColor, 
+                    always_on_top: bool, show_stage_label: bool, prevent_offscreen: bool) -> None:
         self._text_color = color
         self._font_family = font
         self._font_size = size
         self._bg_color = bg_color
+        self._show_stage_label = show_stage_label
+        self._prevent_offscreen = prevent_offscreen
         self.setWindowOpacity(opacity)
+        
+        flags = self.windowFlags()
+        if always_on_top:
+            flags |= Qt.WindowStaysOnTopHint
+        else:
+            flags &= ~Qt.WindowStaysOnTopHint
+            
+        if flags != self.windowFlags():
+            was_visible = self.isVisible()
+            self.setWindowFlags(flags)
+            if was_visible:
+                self.show()
+
         self._refresh_labels()
         self._update_size()
         self.update()
@@ -486,20 +520,29 @@ class FloatBar(QWidget):
     def _update_size(self) -> None:
         fm_stage = self.lbl_stage.fontMetrics()
         fm_time = self.lbl_time.fontMetrics()
-        
         text = self._current_stage_text or "环节名称"
         
-        stage_w = fm_stage.horizontalAdvance(text) + 20
         time_w = fm_time.horizontalAdvance("88:88") + 20
-        
-        self.lbl_stage.setText(text)
-        self.lbl_stage.setFixedWidth(stage_w)
         self.lbl_time.setFixedWidth(time_w)
 
         btn_w = (self.ICON_SIZE + 2) * 6
         self._btn_container.setFixedWidth(btn_w)
 
-        self._text_width = 18 + stage_w + 12 + time_w + 18
+        if self._show_stage_label:
+            self.lbl_stage.show()
+            self._spacing_item.changeSize(12, 0, QSizePolicy.Fixed, QSizePolicy.Fixed)
+            stage_w = fm_stage.horizontalAdvance(text) + 20
+            self.lbl_stage.setText(text)
+            self.lbl_stage.setFixedWidth(stage_w)
+            self._text_width = 18 + stage_w + 12 + time_w + 18
+        else:
+            self.lbl_stage.hide()
+            self._spacing_item.changeSize(0, 0, QSizePolicy.Fixed, QSizePolicy.Fixed)
+            self.lbl_stage.setFixedWidth(0)
+            self._text_width = 18 + time_w + 18
+
+        self._layout.invalidate()
+        
         self._full_width = self._text_width + btn_w + 16
 
         h = max(self._font_size + 24, 50)
@@ -513,8 +556,8 @@ class FloatBar(QWidget):
             self.setFixedWidth(self._text_width)
             self._btn_opacity.setOpacity(0.0)
 
-    def update_display(self, stage: str, remaining: int) -> None:
-        mm, ss = divmod(remaining, 60)
+    def update_display(self, stage: str, display_sec: int) -> None:
+        mm, ss = divmod(display_sec, 60)
         if self._current_stage_text != stage:
             self._current_stage_text = stage
             self._update_size()
@@ -565,10 +608,10 @@ class FloatBar(QWidget):
             QMenu::item:selected { background:#3d3d3d; }
             QMenu::separator { background:#444; height:1px; margin:4px 8px; }
         """)
-        m.addAction("开始 / 暂停").triggered.connect(self.btn_toggle.click)
-        m.addAction("重置本环节").triggered.connect(self.btn_restart.click)
-        m.addAction("上一阶段").triggered.connect(self.btn_prev.click)
-        m.addAction("下一阶段").triggered.connect(self.btn_next.click)
+        m.addAction("播放 / 暂停").triggered.connect(self.btn_toggle.click)
+        m.addAction("重置当前环节").triggered.connect(self.btn_restart.click)
+        m.addAction("上一环节").triggered.connect(self.btn_prev.click)
+        m.addAction("下一环节").triggered.connect(self.btn_next.click)
         m.addSeparator()
         m.addAction("设置").triggered.connect(self.request_settings.emit)
         m.addAction("退出").triggered.connect(self.request_exit.emit)
@@ -587,15 +630,17 @@ class FloatBar(QWidget):
 
     def mouseMoveEvent(self, e: QMouseEvent) -> None:
         if self._drag_pos and e.buttons() == Qt.LeftButton:
-            self.move(e.globalPos() - self._drag_pos)
+            new_pos = e.globalPos() - self._drag_pos
+            if self._prevent_offscreen:
+                screen = QApplication.desktop().availableGeometry(self)
+                new_x = max(screen.left(), min(new_pos.x(), screen.right() - self.width()))
+                new_y = max(screen.top(), min(new_pos.y(), screen.bottom() - self.height()))
+                new_pos = QPoint(new_x, new_y)
+            self.move(new_pos)
 
     def mouseReleaseEvent(self, e: QMouseEvent) -> None:
         self._drag_pos = None
 
-
-# ================================================================
-#  设置窗口与后台协调
-# ================================================================
 class SettingsWindow(QDialog):
     _SS = """
     QDialog { background: #f0f2f5; }
@@ -646,8 +691,8 @@ class SettingsWindow(QDialog):
         main_lay.setSpacing(0)
 
         self.nav_list = QListWidget()
-        self.nav_list.setFixedWidth(180)
-        self.nav_list.addItems(["📑 环节与流程", "🔔 提醒与声音", "🎨 外观与样式", "⌨️ 快捷键设置"])
+        self.nav_list.setFixedWidth(160)
+        self.nav_list.addItems(["流程设置", "提醒设置", "外观设置", "快捷键"])
         main_lay.addWidget(self.nav_list)
 
         self.stack = QStackedWidget()
@@ -668,7 +713,7 @@ class SettingsWindow(QDialog):
         btn_lay = QHBoxLayout(bottom_bar)
         btn_lay.setContentsMargins(20, 12, 20, 12)
         
-        self.btn_save = QPushButton("✓ 保存")
+        self.btn_save = QPushButton("保存")
         self.btn_save.setStyleSheet("background:#1a73e8; color:#fff; border:none; font-weight:bold; padding: 10px 28px; font-size: 16px;")
         self.btn_save.setCursor(Qt.PointingHandCursor)
         
@@ -697,10 +742,24 @@ class SettingsWindow(QDialog):
         return w, lay
 
     def _build_page_stages(self) -> QWidget:
-        w, lay = self._create_page_wrap("环节配置", "配置演示的不同阶段（如：说课 5 分钟、答辩 2 分钟）。")
-        self.chk_auto_advance = QCheckBox("开启自动进入下一阶段")
-        self.chk_auto_advance.setStyleSheet("font-weight: bold; color: #1a73e8; font-size: 16px;")
-        lay.addWidget(self.chk_auto_advance)
+        w, lay = self._create_page_wrap("流程配置", "设置各环节的名称、时长与计时规则。")
+        
+        opt_lay1 = QHBoxLayout()
+        self.chk_show_label = QCheckBox("显示环节名称")
+        self.chk_show_label.setStyleSheet("font-weight: bold; color: #333; font-size: 16px;")
+        
+        self.chk_auto_advance = QCheckBox("自动进入下一环节")
+        self.chk_auto_advance.setStyleSheet("font-weight: bold; color: #333; font-size: 16px;")
+        
+        self.chk_ppt_auto_start = QCheckBox("PPT开始放映时自动启动计时")
+        self.chk_ppt_auto_start.setStyleSheet("font-weight: bold; color: #1a73e8; font-size: 16px;")
+
+        opt_lay1.addWidget(self.chk_show_label)
+        opt_lay1.addWidget(self.chk_auto_advance)
+        opt_lay1.addStretch()
+
+        lay.addLayout(opt_lay1)
+        lay.addWidget(self.chk_ppt_auto_start)
         
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -711,19 +770,19 @@ class SettingsWindow(QDialog):
         scroll.setWidget(content)
         lay.addWidget(scroll)
 
-        btn_add = QPushButton("＋ 新增阶段")
+        btn_add = QPushButton("＋ 添加环节")
         btn_add.setCursor(Qt.PointingHandCursor)
         btn_add.clicked.connect(lambda: self._add_stage_row())
         lay.addWidget(btn_add, alignment=Qt.AlignCenter)
         return w
 
     def _build_page_alerts(self) -> QWidget:
-        w, lay = self._create_page_wrap("提醒与声音", "配置时间快到时产生的闪烁与系统提示音。")
-        self.chk_global_sound = QCheckBox("🔊 开启全局声音")
+        w, lay = self._create_page_wrap("倒计时提醒", "设置特定剩余时间点的高亮闪烁与提示音效果。")
+        self.chk_global_sound = QCheckBox("开启全局提示音")
         self.chk_global_sound.setStyleSheet("font-weight: bold; color: #d35400; font-size: 16px;")
         lay.addWidget(self.chk_global_sound)
         
-        self.chk_10s_sound = QCheckBox("最后10秒倒数播放提示音")
+        self.chk_10s_sound = QCheckBox("最后 10 秒倒数提示音")
         lay.addWidget(self.chk_10s_sound)
 
         scroll = QScrollArea()
@@ -735,14 +794,27 @@ class SettingsWindow(QDialog):
         scroll.setWidget(content)
         lay.addWidget(scroll)
 
-        btn_add = QPushButton("＋ 新增提醒节点")
+        btn_add = QPushButton("＋ 添加提醒节点")
         btn_add.setCursor(Qt.PointingHandCursor)
         btn_add.clicked.connect(lambda: self._add_alert_row())
         lay.addWidget(btn_add, alignment=Qt.AlignCenter)
         return w
 
     def _build_page_appearance(self) -> QWidget:
-        w, lay = self._create_page_wrap("外观样式", "自定义悬浮计时器的色彩、透明度与排版风格。")
+        w, lay = self._create_page_wrap("显示外观", "自定义计时器悬浮窗的视觉样式与行为限制。")
+        
+        opt_lay = QHBoxLayout()
+        self.chk_always_on_top = QCheckBox("窗口始终置顶")
+        self.chk_always_on_top.setStyleSheet("font-weight: bold; color: #333; font-size: 16px;")
+        
+        self.chk_prevent_offscreen = QCheckBox("防止窗口移出屏幕")
+        self.chk_prevent_offscreen.setStyleSheet("font-weight: bold; color: #333; font-size: 16px;")
+        
+        opt_lay.addWidget(self.chk_always_on_top)
+        opt_lay.addWidget(self.chk_prevent_offscreen)
+        opt_lay.addStretch()
+        lay.addLayout(opt_lay)
+
         form = QFormLayout()
         form.setContentsMargins(10, 10, 10, 10)
         form.setSpacing(20)
@@ -759,7 +831,7 @@ class SettingsWindow(QDialog):
             form.addRow(title, row)
             return preview
 
-        self._color_preview = add_color_row("文字颜色：", "_cur_color")
+        self._color_preview = add_color_row("文本颜色：", "_cur_color")
         self._bg_color_preview = add_color_row("背景颜色：", "_cur_bg_color")
 
         def add_slider_row(title, min_v, max_v, suffix=""):
@@ -778,17 +850,17 @@ class SettingsWindow(QDialog):
         
         self._font_cmb = QFontComboBox()
         self._font_cmb.setFontFilters(QFontComboBox.ScalableFonts)
-        form.addRow("字体风格：", self._font_cmb)
+        form.addRow("字体族：", self._font_cmb)
 
-        self._size_slider = add_slider_row("时间字号：", 16, 72, " px")
-        self._op_slider = add_slider_row("整体透明度：", 20, 100, "%")
+        self._size_slider = add_slider_row("字体大小：", 16, 72, " px")
+        self._op_slider = add_slider_row("全局透明度：", 20, 100, "%")
 
         lay.addLayout(form)
         lay.addStretch()
         return w
 
     def _build_page_shortcuts(self) -> QWidget:
-        w, lay = self._create_page_wrap("快捷键配置", "为核心操作分配全局快捷键。\n(⚠️由于系统级限制，快捷键需鼠标点击激活面板时生效)")
+        w, lay = self._create_page_wrap("快捷键绑定", "设置核心操作热键（需点击激活悬浮窗后生效）。")
         form = QFormLayout()
         form.setContentsMargins(10, 10, 10, 10)
         form.setSpacing(24)
@@ -798,10 +870,10 @@ class SettingsWindow(QDialog):
         self.ks_prev = QKeySequenceEdit()
         self.ks_next = QKeySequenceEdit()
 
-        form.addRow("▶️ 播放 / 暂停：", self.ks_toggle)
-        form.addRow("🔄 重置当前环节：", self.ks_reset)
-        form.addRow("⏮️ 上一个环节：", self.ks_prev)
-        form.addRow("⏭️ 下一个环节：", self.ks_next)
+        form.addRow("播放 / 暂停：", self.ks_toggle)
+        form.addRow("重置当前环节：", self.ks_reset)
+        form.addRow("上一环节：", self.ks_prev)
+        form.addRow("下一环节：", self.ks_next)
 
         lay.addLayout(form)
         lay.addStretch()
@@ -809,8 +881,11 @@ class SettingsWindow(QDialog):
 
     def _populate(self) -> None:
         self.chk_auto_advance.setChecked(self.config.auto_advance)
+        self.chk_show_label.setChecked(self.config.show_stage_label)
+        self.chk_ppt_auto_start.setChecked(self.config.ppt_auto_start)
+        
         for s in self.config.stages:
-            self._add_stage_row(s.label, s.duration, s.unit)
+            self._add_stage_row(s.label, s.duration, s.unit, s.count_up)
         if not self.config.stages:
             self._add_stage_row()
         
@@ -819,6 +894,9 @@ class SettingsWindow(QDialog):
         for a in self.config.alerts:
             self._add_alert_row(a.seconds, a.color, a.play_sound)
         
+        self.chk_always_on_top.setChecked(self.config.always_on_top)
+        self.chk_prevent_offscreen.setChecked(self.config.prevent_offscreen)
+
         self._cur_color = self.config.color
         self._set_color_preview(self._color_preview, self._cur_color)
         self._cur_bg_color = self.config.bg_color
@@ -833,36 +911,42 @@ class SettingsWindow(QDialog):
         self.ks_prev.setKeySequence(QKeySequence(self.config.shortcut_prev))
         self.ks_next.setKeySequence(QKeySequence(self.config.shortcut_next))
 
-    def _add_stage_row(self, label: str = "新阶段", duration: int = 3, unit: str = "分") -> None:
+    def _add_stage_row(self, label: str = "新阶段", duration: int = 3, unit: str = "分", count_up: bool = False) -> None:
         row_widget = QWidget()
         h = QHBoxLayout(row_widget)
         h.setContentsMargins(0, 6, 0, 6)
         
         name = QLineEdit(label)
-        name.setPlaceholderText("阶段名称")
-        name.setMaxLength(30) 
+        name.setPlaceholderText("环节名称")
+        name.setMaxLength(100) # 将限制改为100字符，防止无限制恶意输入
         h.addWidget(name, 2)
         
         spin = QSpinBox()
         spin.setRange(1, 9999)
         spin.setValue(duration)
-        spin.setFixedWidth(85)
+        spin.setFixedWidth(80)
         h.addWidget(spin)
         
         unit_cmb = QComboBox()
         unit_cmb.addItems(["分", "秒"])
         unit_cmb.setCurrentText(unit)
-        unit_cmb.setFixedWidth(65)
+        unit_cmb.setFixedWidth(60)
         h.addWidget(unit_cmb)
 
-        row = {"widget": row_widget, "name": name, "spin": spin, "unit_cmb": unit_cmb}
+        dir_cmb = QComboBox()
+        dir_cmb.addItems(["倒计时", "正计时"])
+        dir_cmb.setCurrentText("正计时" if count_up else "倒计时")
+        dir_cmb.setFixedWidth(95)
+        h.addWidget(dir_cmb)
+
+        row = {"widget": row_widget, "name": name, "spin": spin, "unit_cmb": unit_cmb, "dir_cmb": dir_cmb}
         self._add_row_controls(h, self._stage_rows, row, self._rebuild_stage_rows)
         self._stage_rows.append(row)
         self._stage_vlay.addWidget(row_widget)
 
     def _rebuild_stage_rows(self) -> None:
         self._rebuild_rows(self._stage_vlay, self._stage_rows,
-                           lambda r: self._add_stage_row(r["name"].text(), r["spin"].value(), r["unit_cmb"].currentText()))
+                           lambda r: self._add_stage_row(r["name"].text(), r["spin"].value(), r["unit_cmb"].currentText(), r["dir_cmb"].currentText() == "正计时"))
 
     def _add_alert_row(self, seconds: int = 20, color: str = "#ffaa00", play_sound: bool = True) -> None:
         row_widget = QWidget()
@@ -882,14 +966,14 @@ class SettingsWindow(QDialog):
         cbtn.setCursor(Qt.PointingHandCursor)
         self._set_color_preview(cbtn, color)
         
-        chk_sound = QCheckBox("触发声音")
+        chk_sound = QCheckBox("播放提示音")
         chk_sound.setChecked(play_sound)
 
         row = {"widget": row_widget, "spin": spin, "color": color, "cbtn": cbtn, "chk_sound": chk_sound}
         cbtn.clicked.connect(partial(self._pick_alert_color, row))
         
         h.addSpacing(10)
-        h.addWidget(QLabel("闪烁色:"))
+        h.addWidget(QLabel("高亮色:"))
         h.addWidget(cbtn)
         h.addSpacing(10)
         h.addWidget(chk_sound)
@@ -961,10 +1045,14 @@ class SettingsWindow(QDialog):
 
     def get_config(self) -> Config:
         self.config.auto_advance = self.chk_auto_advance.isChecked()
+        self.config.show_stage_label = self.chk_show_label.isChecked()
+        self.config.ppt_auto_start = self.chk_ppt_auto_start.isChecked()
         self.config.global_sound = self.chk_global_sound.isChecked()
         self.config.countdown_10s_sound = self.chk_10s_sound.isChecked()
+        self.config.always_on_top = self.chk_always_on_top.isChecked()
+        self.config.prevent_offscreen = self.chk_prevent_offscreen.isChecked()
         
-        self.config.stages = [Stage(r["name"].text(), r["spin"].value(), r["unit_cmb"].currentText()) for r in self._stage_rows]
+        self.config.stages = [Stage(r["name"].text(), r["spin"].value(), r["unit_cmb"].currentText(), r["dir_cmb"].currentText() == "正计时") for r in self._stage_rows]
         self.config.alerts = [Alert(r["spin"].value(), r["color"], r["chk_sound"].isChecked()) for r in self._alert_rows]
         
         self.config.color = self._cur_color
@@ -991,6 +1079,11 @@ class App(QObject):
         self.controller = TimerController(self.config)
         self._shortcuts = []
         
+        self._ppt_was_active = False
+        self._ppt_monitor_timer = QTimer(self)
+        self._ppt_monitor_timer.timeout.connect(self._check_ppt_status)
+        self._ppt_monitor_timer.start(1000)
+        
         self._connect_signals()
         self._apply_style()
         self._apply_shortcuts()
@@ -999,6 +1092,20 @@ class App(QObject):
         screen = QApplication.primaryScreen().availableGeometry()
         self.float_bar.move(screen.left() + 20, screen.top() + 20)
         self.float_bar.show()
+
+    def _check_ppt_status(self) -> None:
+        """后台轮询，安全触发自动计时"""
+        if not self.config.ppt_auto_start:
+            return
+            
+        is_active = is_ppt_slideshow_active()
+        
+        # 仅在由非放映模式切换到放映模式的那一刻触发
+        if is_active and not self._ppt_was_active:
+            if self.controller.paused and self.controller._remaining_float > 0:
+                self.controller.toggle_pause()
+                
+        self._ppt_was_active = is_active
 
     def _connect_signals(self) -> None:
         fb = self.float_bar
@@ -1020,7 +1127,8 @@ class App(QObject):
 
     def _apply_style(self) -> None:
         c = self.config
-        self.float_bar.apply_style(c.color, c.font, c.font_size, c.opacity, c.bg_qcolor())
+        self.float_bar.apply_style(c.color, c.font, c.font_size, c.opacity, c.bg_qcolor(), 
+                                   c.always_on_top, c.show_stage_label, c.prevent_offscreen)
 
     def _apply_shortcuts(self) -> None:
         for sc in self._shortcuts:
@@ -1066,8 +1174,8 @@ class App(QObject):
         dlg.accept()
 
     def _exit(self) -> None:
-        """彻底安全释放所有资源，无残留退出"""
         self.controller.stop()
+        self._ppt_monitor_timer.stop()
         for sc in self._shortcuts:
             sc.setEnabled(False)
             sc.deleteLater()
@@ -1078,7 +1186,6 @@ class App(QObject):
 
 
 if __name__ == "__main__":
-    # 高分屏及抗锯齿渲染支持
     if hasattr(Qt, 'AA_EnableHighDpiScaling'):
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
@@ -1089,20 +1196,16 @@ if __name__ == "__main__":
     app.setApplicationName(APP_NAME)
     app.setQuitOnLastWindowClosed(False)
     
-    # 工业级单例模式：阻止应用多开重叠
     shared_mem_key = f"{APP_NAME}_SingleInstance_MemoryLock"
     shared_mem = QSharedMemory(shared_mem_key)
     
     if shared_mem.attach():
-        # 如果已经存在实例，直接静默安全退出
         sys.exit(0)
     else:
-        # 创建 1 byte 内存锁占位
         shared_mem.create(1) 
 
     main = App()
     
-    # 监听退出并清理内存锁
     exit_code = app.exec_()
     if shared_mem.isAttached():
         shared_mem.detach()
