@@ -10,9 +10,6 @@
 **QTimer** 是一款专为**说课、答辩、演讲、会议**打造的**极简悬浮桌面计时器**。  
 采用无边框半透明设计，平时安静悬浮在屏幕角落，鼠标悬停时丝滑展开控制面板，绝不干扰你的演示。
 
-![QTimer Preview](https://via.placeholder.com/800x450/1a1a1a/ffffff?text=QTimer+Preview+Screenshot)  
-*(建议替换为实际程序截图)*
-
 ---
 
 ## ✨ 核心特性
