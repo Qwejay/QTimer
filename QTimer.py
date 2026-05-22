@@ -159,6 +159,10 @@ class Config:
         self.color: str = "#ffffff"
         self.font: str = "微软雅黑"
         self.font_size: int = 32
+        self.stage_font: str = "STXingkai"
+        self.stage_font_size: int = 26
+        self.time_font: str = "MS Shell Dlg 2"
+        self.time_font_size: int = 32
         self.opacity: float = 0.95
         self.bg_color: str = "#141414"
         self.bg_opacity: int = 82
@@ -180,7 +184,12 @@ class Config:
             "stages": [asdict(s) for s in self.stages],
             "alerts": [asdict(a) for a in self.alerts],
             "color": self.color, "font": self.font,
-            "font_size": self.font_size, "opacity": self.opacity,
+            "font_size": self.font_size,
+            "stage_font": self.stage_font,
+            "stage_font_size": self.stage_font_size,
+            "time_font": self.time_font,
+            "time_font_size": self.time_font_size,
+            "opacity": self.opacity,
             "bg_color": self.bg_color, "bg_opacity": self.bg_opacity,
             "shortcut_toggle": self.shortcut_toggle, "shortcut_reset": self.shortcut_reset,
             "shortcut_prev": self.shortcut_prev, "shortcut_next": self.shortcut_next,
@@ -216,6 +225,10 @@ class Config:
             self.color = d.get("color", self.color)
             self.font = d.get("font", self.font)
             self.font_size = d.get("font_size", self.font_size)
+            self.stage_font = d.get("stage_font", self.stage_font)
+            self.stage_font_size = d.get("stage_font_size", self.stage_font_size)
+            self.time_font = d.get("time_font", self.time_font)
+            self.time_font_size = d.get("time_font_size", self.time_font_size)
             self.opacity = d.get("opacity", self.opacity)
             self.bg_color = d.get("bg_color", self.bg_color)
             self.bg_opacity = d.get("bg_opacity", self.bg_opacity)
@@ -379,8 +392,10 @@ class FloatBar(QWidget):
 
         self._drag_pos = None
         self._text_color = "#ffffff"
-        self._font_family = "微软雅黑"
-        self._font_size = 32
+        self._stage_font = "STXingkai"
+        self._stage_font_size = 26
+        self._time_font = "MS Shell Dlg 2"
+        self._time_font_size = 32
         self._bg_color = QColor(20, 20, 20, 210)
         self._show_stage_label = True
         self._prevent_offscreen = True
@@ -475,11 +490,16 @@ class FloatBar(QWidget):
         """)
         return b
 
-    def apply_style(self, color: str, font: str, size: int, opacity: float, bg_color: QColor, 
+    def apply_style(self, color: str, 
+                    stage_font: str, stage_size: int,
+                    time_font: str, time_size: int,
+                    opacity: float, bg_color: QColor, 
                     always_on_top: bool, show_stage_label: bool, prevent_offscreen: bool) -> None:
         self._text_color = color
-        self._font_family = font
-        self._font_size = size
+        self._stage_font = stage_font
+        self._stage_font_size = stage_size
+        self._time_font = time_font
+        self._time_font_size = time_size
         self._bg_color = bg_color
         self._show_stage_label = show_stage_label
         self._prevent_offscreen = prevent_offscreen
@@ -504,15 +524,14 @@ class FloatBar(QWidget):
     def _refresh_labels(self, stage_color: Optional[str] = None, time_color: Optional[str] = None) -> None:
         sc = stage_color or self._text_color
         tc = time_color or self._text_color
-        stage_size = max(13, int(self._font_size * 0.65))
         
         self.lbl_stage.setStyleSheet(
-            f"color:{sc}; font-family:'{self._font_family}'; "
-            f"font-size:{stage_size}px; font-weight:600; background:transparent;")
+            f"color:{sc}; font-family:'{self._stage_font}'; "
+            f"font-size:{self._stage_font_size}px; font-weight:600; background:transparent;")
             
         self.lbl_time.setStyleSheet(
-            f"color:{tc}; font-family:'{self._font_family}'; "
-            f"font-size:{self._font_size}px; font-weight:900; background:transparent;")
+            f"color:{tc}; font-family:'{self._time_font}'; "
+            f"font-size:{self._time_font_size}px; font-weight:900; background:transparent;")
             
         self.lbl_stage.style().polish(self.lbl_stage)
         self.lbl_time.style().polish(self.lbl_time)
@@ -545,7 +564,7 @@ class FloatBar(QWidget):
         
         self._full_width = self._text_width + btn_w + 16
 
-        h = max(self._font_size + 24, 50)
+        h = max(self._time_font_size + 24, 50)
         self._canvas.setFixedSize(self._full_width, h)
         self.setFixedHeight(h)
 
@@ -848,11 +867,18 @@ class SettingsWindow(QDialog):
 
         self._bg_op_slider = add_slider_row("背景透明度：", 10, 100, "%")
         
-        self._font_cmb = QFontComboBox()
-        self._font_cmb.setFontFilters(QFontComboBox.ScalableFonts)
-        form.addRow("字体族：", self._font_cmb)
+        self._stage_font_cmb = QFontComboBox()
+        self._stage_font_cmb.setFontFilters(QFontComboBox.ScalableFonts)
+        form.addRow("环节名称字体：", self._stage_font_cmb)
 
-        self._size_slider = add_slider_row("字体大小：", 16, 72, " px")
+        self._stage_size_slider = add_slider_row("环节名称大小：", 12, 48, " px")
+
+        self._time_font_cmb = QFontComboBox()
+        self._time_font_cmb.setFontFilters(QFontComboBox.ScalableFonts)
+        form.addRow("时间字体：", self._time_font_cmb)
+
+        self._time_size_slider = add_slider_row("时间字体大小：", 16, 72, " px")
+
         self._op_slider = add_slider_row("全局透明度：", 20, 100, "%")
 
         lay.addLayout(form)
@@ -902,8 +928,10 @@ class SettingsWindow(QDialog):
         self._cur_bg_color = self.config.bg_color
         self._set_color_preview(self._bg_color_preview, self._cur_bg_color)
         self._bg_op_slider.setValue(self.config.bg_opacity)
-        self._font_cmb.setCurrentFont(QFont(self.config.font))
-        self._size_slider.setValue(self.config.font_size)
+        self._stage_font_cmb.setCurrentFont(QFont(self.config.stage_font))
+        self._stage_size_slider.setValue(self.config.stage_font_size)
+        self._time_font_cmb.setCurrentFont(QFont(self.config.time_font))
+        self._time_size_slider.setValue(self.config.time_font_size)
         self._op_slider.setValue(int(self.config.opacity * 100))
 
         self.ks_toggle.setKeySequence(QKeySequence(self.config.shortcut_toggle))
@@ -918,7 +946,7 @@ class SettingsWindow(QDialog):
         
         name = QLineEdit(label)
         name.setPlaceholderText("环节名称")
-        name.setMaxLength(100) # 将限制改为100字符，防止无限制恶意输入
+        name.setMaxLength(100)
         h.addWidget(name, 2)
         
         spin = QSpinBox()
@@ -1058,8 +1086,10 @@ class SettingsWindow(QDialog):
         self.config.color = self._cur_color
         self.config.bg_color = self._cur_bg_color
         self.config.bg_opacity = self._bg_op_slider.value()
-        self.config.font = self._font_cmb.currentFont().family()
-        self.config.font_size = self._size_slider.value()
+        self.config.stage_font = self._stage_font_cmb.currentFont().family()
+        self.config.stage_font_size = self._stage_size_slider.value()
+        self.config.time_font = self._time_font_cmb.currentFont().family()
+        self.config.time_font_size = self._time_size_slider.value()
         self.config.opacity = self._op_slider.value() / 100
 
         self.config.shortcut_toggle = self.ks_toggle.keySequence().toString()
@@ -1100,7 +1130,6 @@ class App(QObject):
             
         is_active = is_ppt_slideshow_active()
         
-        # 仅在由非放映模式切换到放映模式的那一刻触发
         if is_active and not self._ppt_was_active:
             if self.controller.paused and self.controller._remaining_float > 0:
                 self.controller.toggle_pause()
@@ -1127,8 +1156,13 @@ class App(QObject):
 
     def _apply_style(self) -> None:
         c = self.config
-        self.float_bar.apply_style(c.color, c.font, c.font_size, c.opacity, c.bg_qcolor(), 
-                                   c.always_on_top, c.show_stage_label, c.prevent_offscreen)
+        self.float_bar.apply_style(
+            c.color, 
+            c.stage_font, c.stage_font_size,
+            c.time_font, c.time_font_size,
+            c.opacity, c.bg_qcolor(), 
+            c.always_on_top, c.show_stage_label, c.prevent_offscreen
+        )
 
     def _apply_shortcuts(self) -> None:
         for sc in self._shortcuts:
