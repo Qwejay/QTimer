@@ -36,7 +36,11 @@ def get_config_path() -> str:
 
 CONFIG_PATH = get_config_path()
 
+# ================================================================
+#  PPT 全屏放映探测器 (防误触引擎)
+# ================================================================
 def is_ppt_slideshow_active() -> bool:
+    """仅在 Windows 下探测是否处于 PPT / WPS 的全屏放映模式"""
     if platform.system() != "Windows":
         return False
     try:
@@ -147,6 +151,7 @@ class Config:
         self.always_on_top: bool = True         
         self.prevent_offscreen: bool = True     
         self.show_stage_label: bool = True      
+        
         self.ppt_auto_start: bool = True
 
         self.stages: List[Stage] = [Stage("说课时间", 5, "分", False), Stage("答辩时间", 2, "分", False)]
@@ -155,6 +160,7 @@ class Config:
         self.color: str = "#ffffff"
         self.font: str = "微软雅黑"
         self.font_size: int = 32
+        # 环节名称默认使用常用字体（兼容性好）
         self.stage_font: str = "微软雅黑"
         self.stage_font_size: int = 18
         self.opacity: float = 0.95
@@ -388,6 +394,7 @@ class FloatBar(QWidget):
         self._text_color = "#ffffff"
         self._font_family = "微软雅黑"
         self._font_size = 32
+        # 新增独立配置
         self._stage_font_family = "微软雅黑"
         self._stage_font_size = 18
         self._bg_color = QColor(20, 20, 20, 210)
@@ -518,10 +525,13 @@ class FloatBar(QWidget):
         sc = stage_color or self._text_color
         tc = time_color or self._text_color
         
+        # 环节名称独立样式
+        stage_size = self._stage_font_size
         self.lbl_stage.setStyleSheet(
             f"color:{sc}; font-family:'{self._stage_font_family}'; "
-            f"font-size:{self._stage_font_size}px; font-weight:600; background:transparent;")
+            f"font-size:{stage_size}px; font-weight:600; background:transparent;")
             
+        # 时间保持原有主字体
         self.lbl_time.setStyleSheet(
             f"color:{tc}; font-family:'{self._font_family}'; "
             f"font-size:{self._font_size}px; font-weight:900; background:transparent;")
@@ -655,22 +665,34 @@ class FloatBar(QWidget):
 
 class SettingsWindow(QDialog):
     _SS = """
-    QDialog { background: #f8f9fa; }
-    QLabel { color: #333; }
-    QCheckBox { color: #333; font-size: 15px; }
-    QListWidget { background: #ffffff; border: none; border-right: 1px solid #e0e0e0; }
-    QListWidget::item { padding: 14px 20px; font-size: 15px; }
-    QListWidget::item:selected { background: #e3f2fd; color: #1976d2; font-weight: 500; }
+    QDialog { background: #f0f2f5; }
+    QLabel { color: #333; font-size: 16px; }
+    QCheckBox { color: #333; font-size: 16px; }
     
-    QGroupBox { font-weight: 600; border: 1px solid #e0e0e0; border-radius: 8px; margin-top: 12px; }
-    QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }
+    QListWidget { background: #ffffff; border: none; border-right: 1px solid #dcdde1; outline: none; }
+    QListWidget::item { padding: 16px 20px; color: #555; font-size: 16px; border-bottom: 1px solid #f5f6fa; }
+    QListWidget::item:selected { background: #f0f7ff; color: #1a73e8; font-weight: bold; border-left: 4px solid #1a73e8; }
+    QListWidget::item:hover:!selected { background: #f8f9fa; }
+
+    QLineEdit, QSpinBox, QFontComboBox, QComboBox, QKeySequenceEdit { background: #fff; color: #222; border: 1px solid #ccc; border-radius: 4px; padding: 6px 10px; font-size: 16px; min-height: 24px; }
+    QLineEdit:focus, QKeySequenceEdit:focus { border-color: #1a73e8; }
+    
+    QPushButton { background: #fff; color: #333; border: 1px solid #ccc; border-radius: 4px; padding: 8px 16px; font-size: 16px; }
+    QPushButton:hover { background: #f8f9fa; border-color: #aaa; }
+    QPushButton:pressed { background: #e5e5e5; }
+    
+    QScrollArea { border: none; background: transparent; }
+    QScrollBar:vertical { background: #f0f0f0; width: 8px; }
+    QScrollBar::handle:vertical { background: #bbb; border-radius: 4px; min-height: 30px; }
+    QSlider::groove:horizontal { background: #ddd; height: 6px; border-radius: 3px; }
+    QSlider::handle:horizontal { background: #1a73e8; width: 20px; height: 20px; margin: -7px 0; border-radius: 10px; }
     """
 
     def __init__(self, config: Config, parent=None):
         super().__init__(parent)
         self.config = config
-        self.setWindowTitle(f"{APP_NAME} 设置")
-        self.resize(880, 640)
+        self.setWindowTitle(f"{APP_NAME} Settings")
+        self.resize(850, 600)
         self.setStyleSheet(self._SS)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         
@@ -690,33 +712,31 @@ class SettingsWindow(QDialog):
         main_lay.setContentsMargins(0, 0, 0, 0)
         main_lay.setSpacing(0)
 
-        # 左侧导航
         self.nav_list = QListWidget()
-        self.nav_list.setFixedWidth(180)
+        self.nav_list.setFixedWidth(160)
         self.nav_list.addItems(["流程设置", "提醒设置", "外观设置", "快捷键"])
-        self.nav_list.setCurrentRow(0)
         main_lay.addWidget(self.nav_list)
 
-        # 右侧内容
         self.stack = QStackedWidget()
+        self.stack.setStyleSheet("background: #fcfcfd;")
         self.stack.addWidget(self._build_page_stages())
         self.stack.addWidget(self._build_page_alerts())
         self.stack.addWidget(self._build_page_appearance())
         self.stack.addWidget(self._build_page_shortcuts())
+        
         main_lay.addWidget(self.stack)
-
         root_lay.addWidget(main_widget)
 
         self.nav_list.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self.nav_list.setCurrentRow(0)
 
-        # 底部按钮
         bottom_bar = QWidget()
-        bottom_bar.setStyleSheet("background: white; border-top: 1px solid #e0e0e0;")
+        bottom_bar.setStyleSheet("background: #ffffff; border-top: 1px solid #ddd;")
         btn_lay = QHBoxLayout(bottom_bar)
-        btn_lay.setContentsMargins(24, 16, 24, 16)
+        btn_lay.setContentsMargins(20, 12, 20, 12)
         
-        self.btn_save = QPushButton("保存设置")
-        self.btn_save.setStyleSheet("background:#1976d2; color:white; font-size:15px; padding:10px 32px; border:none; border-radius:6px;")
+        self.btn_save = QPushButton("保存")
+        self.btn_save.setStyleSheet("background:#1a73e8; color:#fff; border:none; font-weight:bold; padding: 10px 28px; font-size: 16px;")
         self.btn_save.setCursor(Qt.PointingHandCursor)
         
         self.btn_cancel = QPushButton("取消")
@@ -731,147 +751,150 @@ class SettingsWindow(QDialog):
     def _create_page_wrap(self, title: str, desc: str) -> tuple:
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(32, 32, 32, 32)
-        lay.setSpacing(24)
+        lay.setContentsMargins(30, 24, 30, 20)
+        lay.setSpacing(16)
         
         lbl_title = QLabel(title)
-        lbl_title.setStyleSheet("font-size: 22px; font-weight: 600; color: #1a1a1a;")
+        lbl_title.setStyleSheet("font-size: 28px; font-weight: bold; color: #222;")
         lbl_desc = QLabel(desc)
-        lbl_desc.setStyleSheet("color: #666; font-size: 14px;")
+        lbl_desc.setStyleSheet("color: #666; margin-bottom: 20px; font-size: 15px;")
+        
         lay.addWidget(lbl_title)
         lay.addWidget(lbl_desc)
         return w, lay
 
     def _build_page_stages(self) -> QWidget:
-        w, lay = self._create_page_wrap("流程配置", "管理计时环节的名称、时长和计时方向。")
+        w, lay = self._create_page_wrap("流程配置", "设置各环节的名称、时长与计时规则。")
         
-        opts = QHBoxLayout()
+        opt_lay1 = QHBoxLayout()
         self.chk_show_label = QCheckBox("显示环节名称")
+        self.chk_show_label.setStyleSheet("font-weight: bold; color: #333; font-size: 16px;")
+        
         self.chk_auto_advance = QCheckBox("自动进入下一环节")
-        self.chk_ppt_auto_start = QCheckBox("PPT全屏时自动开始计时")
-        opts.addWidget(self.chk_show_label)
-        opts.addWidget(self.chk_auto_advance)
-        opts.addStretch()
-        lay.addLayout(opts)
-        lay.addWidget(self.chk_ppt_auto_start)
+        self.chk_auto_advance.setStyleSheet("font-weight: bold; color: #333; font-size: 16px;")
+        
+        self.chk_ppt_auto_start = QCheckBox("PPT开始放映时自动启动计时")
+        self.chk_ppt_auto_start.setStyleSheet("font-weight: bold; color: #1a73e8; font-size: 16px;")
 
-        # 可滚动环节列表
+        opt_lay1.addWidget(self.chk_show_label)
+        opt_lay1.addWidget(self.chk_auto_advance)
+        opt_lay1.addStretch()
+
+        lay.addLayout(opt_lay1)
+        lay.addWidget(self.chk_ppt_auto_start)
+        
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
         content = QWidget()
         self._stage_vlay = QVBoxLayout(content)
         self._stage_vlay.setContentsMargins(0, 0, 0, 0)
-        self._stage_vlay.setSpacing(8)
+        self._stage_vlay.setAlignment(Qt.AlignTop)
         scroll.setWidget(content)
         lay.addWidget(scroll)
 
         btn_add = QPushButton("＋ 添加环节")
-        btn_add.setFixedHeight(36)
+        btn_add.setCursor(Qt.PointingHandCursor)
         btn_add.clicked.connect(lambda: self._add_stage_row())
         lay.addWidget(btn_add, alignment=Qt.AlignCenter)
         return w
 
     def _build_page_alerts(self) -> QWidget:
-        w, lay = self._create_page_wrap("提醒设置", "在特定剩余时间触发高亮与提示音。")
-        
-        self.chk_global_sound = QCheckBox("启用提示音")
-        self.chk_10s_sound = QCheckBox("最后10秒播放倒数提示音")
+        w, lay = self._create_page_wrap("倒计时提醒", "设置特定剩余时间点的高亮闪烁与提示音效果。")
+        self.chk_global_sound = QCheckBox("开启全局提示音")
+        self.chk_global_sound.setStyleSheet("font-weight: bold; color: #d35400; font-size: 16px;")
         lay.addWidget(self.chk_global_sound)
+        
+        self.chk_10s_sound = QCheckBox("最后 10 秒倒数提示音")
         lay.addWidget(self.chk_10s_sound)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
         content = QWidget()
         self._alert_vlay = QVBoxLayout(content)
         self._alert_vlay.setContentsMargins(0, 0, 0, 0)
-        self._alert_vlay.setSpacing(8)
+        self._alert_vlay.setAlignment(Qt.AlignTop)
         scroll.setWidget(content)
         lay.addWidget(scroll)
 
         btn_add = QPushButton("＋ 添加提醒节点")
-        btn_add.setFixedHeight(36)
+        btn_add.setCursor(Qt.PointingHandCursor)
         btn_add.clicked.connect(lambda: self._add_alert_row())
         lay.addWidget(btn_add, alignment=Qt.AlignCenter)
         return w
 
     def _build_page_appearance(self) -> QWidget:
-        w, lay = self._create_page_wrap("外观设置", "自定义悬浮窗样式。")
+        w, lay = self._create_page_wrap("外观设置", "自定义计时器悬浮窗的视觉样式与行为限制。")
+        
+        opt_lay = QHBoxLayout()
+        self.chk_always_on_top = QCheckBox("窗口始终置顶")
+        self.chk_always_on_top.setStyleSheet("font-weight: bold; color: #333; font-size: 16px;")
+        
+        self.chk_prevent_offscreen = QCheckBox("防止窗口移出屏幕")
+        self.chk_prevent_offscreen.setStyleSheet("font-weight: bold; color: #333; font-size: 16px;")
+        
+        opt_lay.addWidget(self.chk_always_on_top)
+        opt_lay.addWidget(self.chk_prevent_offscreen)
+        opt_lay.addStretch()
+        lay.addLayout(opt_lay)
 
-        # 颜色与透明度
-        colors = QGroupBox("颜色与透明度")
-        c_lay = QFormLayout(colors)
-        c_lay.setContentsMargins(20, 20, 20, 20)
-        c_lay.setSpacing(16)
+        form = QFormLayout()
+        form.setContentsMargins(10, 10, 10, 10)
+        form.setSpacing(20)
 
-        self._color_preview = QLabel()
-        self._color_preview.setFixedSize(32, 32)
-        btn_color = QPushButton("选择文本颜色")
-        btn_color.clicked.connect(lambda: self._pick_color(self._color_preview, "_cur_color"))
-        row1 = QHBoxLayout()
-        row1.addWidget(self._color_preview)
-        row1.addWidget(btn_color)
-        c_lay.addRow("文本颜色：", row1)
+        def add_color_row(title, attr_name):
+            row = QHBoxLayout()
+            preview = QLabel()
+            preview.setFixedSize(28, 28)
+            btn = QPushButton("选择色彩")
+            btn.clicked.connect(lambda: self._pick_color(preview, attr_name))
+            row.addWidget(preview)
+            row.addWidget(btn)
+            row.addStretch()
+            form.addRow(title, row)
+            return preview
 
-        self._bg_color_preview = QLabel()
-        self._bg_color_preview.setFixedSize(32, 32)
-        btn_bg = QPushButton("选择背景颜色")
-        btn_bg.clicked.connect(lambda: self._pick_color(self._bg_color_preview, "_cur_bg_color"))
-        row2 = QHBoxLayout()
-        row2.addWidget(self._bg_color_preview)
-        row2.addWidget(btn_bg)
-        c_lay.addRow("背景颜色：", row2)
+        self._color_preview = add_color_row("文本颜色：", "_cur_color")
+        self._bg_color_preview = add_color_row("背景颜色：", "_cur_bg_color")
 
-        self._bg_op_slider = QSlider(Qt.Horizontal)
-        self._bg_op_slider.setRange(10, 100)
-        c_lay.addRow("背景透明度：", self._bg_op_slider)
+        def add_slider_row(title, min_v, max_v, suffix=""):
+            row = QHBoxLayout()
+            slider = QSlider(Qt.Horizontal)
+            slider.setRange(min_v, max_v)
+            lbl = QLabel()
+            lbl.setFixedWidth(60)
+            slider.valueChanged.connect(lambda v: lbl.setText(f"{v}{suffix}"))
+            row.addWidget(slider)
+            row.addWidget(lbl)
+            form.addRow(title, row)
+            return slider
 
-        self._op_slider = QSlider(Qt.Horizontal)
-        self._op_slider.setRange(20, 100)
-        c_lay.addRow("整体透明度：", self._op_slider)
-
-        lay.addWidget(colors)
-
-        # 字体
-        fonts = QGroupBox("字体设置")
-        f_lay = QFormLayout(fonts)
-        f_lay.setContentsMargins(20, 20, 20, 20)
-        f_lay.setSpacing(16)
-
+        self._bg_op_slider = add_slider_row("背景透明度：", 10, 100, "%")
+        
+        # 时间文字字体
         self._font_cmb = QFontComboBox()
-        self._size_slider = QSlider(Qt.Horizontal)
-        self._size_slider.setRange(16, 72)
+        self._font_cmb.setFontFilters(QFontComboBox.ScalableFonts)
+        form.addRow("时间字体：", self._font_cmb)
 
+        self._size_slider = add_slider_row("时间字体大小：", 16, 72, " px")
+
+        # 环节名称独立字体
         self._stage_font_cmb = QFontComboBox()
-        self._stage_size_slider = QSlider(Qt.Horizontal)
-        self._stage_size_slider.setRange(12, 48)
+        self._stage_font_cmb.setFontFilters(QFontComboBox.ScalableFonts)
+        form.addRow("环节名称字体：", self._stage_font_cmb)
 
-        f_lay.addRow("时间字体：", self._font_cmb)
-        f_lay.addRow("时间大小：", self._size_slider)
-        f_lay.addRow("环节名称字体：", self._stage_font_cmb)
-        f_lay.addRow("环节名称大小：", self._stage_size_slider)
+        self._stage_size_slider = add_slider_row("环节名称字体大小：", 12, 48, " px")
 
-        lay.addWidget(fonts)
+        self._op_slider = add_slider_row("全局透明度：", 20, 100, "%")
 
-        # 行为
-        behavior = QGroupBox("窗口行为")
-        b_lay = QVBoxLayout(behavior)
-        b_lay.setContentsMargins(20, 20, 20, 20)
-        self.chk_always_on_top = QCheckBox("始终置顶")
-        self.chk_prevent_offscreen = QCheckBox("防止移出屏幕")
-        b_lay.addWidget(self.chk_always_on_top)
-        b_lay.addWidget(self.chk_prevent_offscreen)
-        lay.addWidget(behavior)
-
+        lay.addLayout(form)
         lay.addStretch()
         return w
 
     def _build_page_shortcuts(self) -> QWidget:
-        w, lay = self._create_page_wrap("快捷键", "全局快捷键（悬浮窗获得焦点后生效）。")
+        w, lay = self._create_page_wrap("快捷键绑定", "设置核心操作热键（需点击激活悬浮窗后生效）。")
         form = QFormLayout()
-        form.setContentsMargins(20, 20, 20, 20)
-        form.setSpacing(20)
+        form.setContentsMargins(10, 10, 10, 10)
+        form.setSpacing(24)
 
         self.ks_toggle = QKeySequenceEdit()
         self.ks_reset = QKeySequenceEdit()
@@ -887,7 +910,6 @@ class SettingsWindow(QDialog):
         lay.addStretch()
         return w
 
-    # 以下方法（_populate, _add_stage_row 等）保持完全不变
     def _populate(self) -> None:
         self.chk_auto_advance.setChecked(self.config.auto_advance)
         self.chk_show_label.setChecked(self.config.show_stage_label)
@@ -1110,6 +1132,7 @@ class App(QObject):
         self.float_bar.show()
 
     def _check_ppt_status(self) -> None:
+        """后台轮询，安全触发自动计时"""
         if not self.config.ppt_auto_start:
             return
             
