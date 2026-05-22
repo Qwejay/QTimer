@@ -17,7 +17,7 @@ from PyQt5.QtGui import *
 from PyQt5.QtSvg import QSvgRenderer
 
 APP_NAME = "QTimer"
-APP_VERSION = "Final Release V1.2"
+APP_VERSION = "1.2.0"
 
 def get_app_dir() -> str:
     if getattr(sys, 'frozen', False):
