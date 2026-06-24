@@ -1,70 +1,52 @@
-# ⏱️ QTimer - 极简专业桌面悬浮计时器
+# ⏱️ QTimer V1.1.0 - 极简流线型桌面悬浮计时器
 
-![Python Version](https://img.shields.io/badge/Python-3.7%2B-blue.svg)
-![PyQt5](https://img.shields.io/badge/PyQt5-5.15+-brightgreen.svg)
+![Python Version](https://img.shields.io/badge/Python-3.7+-blue.svg)
+![PyQt5](https://img.shields.io/badge/PyQt5-Supported-brightgreen.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-lightgrey.svg)
-![License](https://img.shields.io/badge/License-MIT-green.svg)
-![Downloads](https://img.shields.io/github/downloads/Qwejay/QTimer/total.svg)
-![Stars](https://img.shields.io/github/stars/Qwejay/QTimer.svg)
+![High DPI](https://img.shields.io/badge/High%20DPI-4K%2F2K%20Ready-ff69b4.svg)
+![Portable](https://img.shields.io/badge/Portable-Supported-orange.svg)
 
-**QTimer** 是一款专为**说课、答辩、演讲、会议**打造的**极简悬浮桌面计时器**。  
-采用无边框半透明设计，平时安静悬浮在屏幕角落，鼠标悬停时丝滑展开控制面板，绝不干扰你的演示。
-
-<img width="249" height="56" alt="image" src="https://github.com/user-attachments/assets/a4857c73-f183-41eb-9590-dcb82608fbae" />
-<img width="481" height="56" alt="image" src="https://github.com/user-attachments/assets/776f1907-7564-4124-adb1-16111bd1c302" />
-<img width="849" height="637" alt="image" src="https://github.com/user-attachments/assets/1526b17a-358d-41c2-9676-e4ecedcdaf6c" />
+**QTimer** 是一款专为**说课、答辩、演讲、会议**等场景打造的桌面悬浮倒计时工具。它采用极简的无边框半透明设计，平时安静地悬浮在屏幕角落，鼠标悬停时如丝滑拉开的抽屉般展示控制面板。
 
 ---
 
-## 🆕 最新更新 (V1.3.0)
+## 🆕 最新更新日志 (V1.1.0 核心升级)
 
-本次更新聚焦于**底层性能优化**与**极致的视觉交互体验**：
-
-- **💎 矢量级超清渲染**：重构了底层 UI 绘制逻辑，完美解决高分屏及大比例缩放下的图标模糊问题，无论放大多少倍，边缘依然极其锐利。
-- **🪄 PPT 联动逻辑升级**：修复了退出放映时进度被重置的 Bug。现在按 `Esc` 退出幻灯片，计时器会自动**暂停并完美保留当前剩余时间**，再次放映无缝续播。
-- **⚡ 丝滑无级缩放**：加入了 `Ctrl + 滚轮` 全局缩放的防抖熔断机制，大幅降低高频磁盘 I/O，缩放过程丝滑流畅，告别卡顿。
-- **🛡️ 智能边界防溢出**：任意比例缩放悬浮窗时，系统会自动进行屏幕边界检测，强行拉回可视区域，再也不用担心面板“飞出屏幕”。
-- **✨ 动画冲突修复**：解决了鼠标极速进出或切段时引起的 UI 抽搐问题，动画过渡更稳重。
-- **✨ 修改滑动开关视觉效果**：使用苹果风格滑动开关替换之前的文字开关更加美观。
+- 🪄 **PPT 放映全自动计时 (智能防误触)**：引入底层 Windows API 探测器。当检测到 PowerPoint (PPT) 或 WPS 进入全屏放映模式的一瞬间，计时器将**自动开始**。严格锚定专属窗口类名，绝对不引发误触，演讲开场更加从容优雅。
+- ⏱️ **正计时 / 倒计时混合编排**：除了传统的倒计时，现在支持在设置中为任意环节单独配置**正计时模式**。底层引擎依然保持无误差时间戳锚定，仅在 UI 层进行智能转换。
+- 🖥️ **窗口越界保护与置顶优化**：新增“防止窗口移出屏幕”功能，无论怎么拖拽，悬浮窗都会被安全“锁”在桌面可视范围内；支持自由开启/关闭窗口置顶（Always on Top）。
+- 🔤 **极致精简的无字模式**：支持一键隐藏“环节名称”文字，悬浮窗会自动收缩多余空隙，化身为一个纯粹的数字时钟，最大程度减少对观众的视觉干扰。
+- ⚙️ **设置界面专业化重构**：全面优化设置面板的交互文案，去除冗余描述与 Emoji，使用更加专业的表述；取消了环节名称的严苛字符限制（现支持长达 100 字符）。
 
 ---
 
 ## ✨ 核心特性
 
-- **🖥️ 智能 PPT/WPS 联动**  
-  后台自动检测全屏放映模式。开始放映自动倒数，退出放映智能暂停。防误触、免操作，让你专注于演讲本身。
-
-- **🎨 高度自定义的视觉排版**  
-  环节名称与时间数字**完全解耦**。支持独立设置不同字体（如行楷+雅黑）、字号、色彩。支持透明度无级调节与极简无字模式。
-
-- **⏱️ 正/倒计时混合编排**  
-  支持建立多个任务小节（如：说课5分钟倒数 -> 答辩2分钟正计时）。底层基于绝对时间戳锚定，无论系统多卡顿，倒计时绝对“零漂移”。
-
-- **🔔 多维度智能预警机制**  
-  支持自定义多个预警时间节点（如：剩 30 秒变黄，剩 10 秒变红）。倒计时最后 10 秒可开启心跳滴答声，倒数结束伴随系统级清脆蜂鸣。
-
-- **🧲 优秀的桌面交互**  
-  始终置顶保护，绝不被其他窗口遮挡；边缘自动磁吸停靠；支持自定义全局快捷键（播放/下一阶段/重置）。
+- 🎯 **无误差精准计时 (Drift-Free Engine)**
+  - 彻底抛弃传统的“累加扣减”计时法。底层采用**绝对系统时间戳锚定**技术，即使你的电脑瞬间卡顿或 UI 线程阻塞，倒计时也绝对不会产生哪怕 1 秒的误差。
+- 🎨 **自适应防挤压 UI (Canvas Masking)**
+  - 首创的“底层画布隔离”机制确保文字与倒计时数字绝对不会发生重叠。配合 `QPropertyAnimation` 带来极致丝滑的折叠/展开动画。
+- 🔄 **多环节无缝流转**
+  - 支持自定义多个流程（如：说课 5 分钟 ➔ 答辩 2 分钟）。可开启**自动流转**模式，倒计时结束自动无缝衔接下一个环节。
+- 🔔 **多线程智能提醒**
+  - **原生系统音效**：支持 Windows (`winsound`) 和 macOS (`afplay`)，采用独立守护线程异步播放声音，绝对不卡主界面。支持全局声音一键总控。
+  - **动态变色闪烁**：可自定义时间节点（如剩余 30 秒变黄，剩余 10 秒变红并伴随最后 10 秒倒数滴答声）。
+- 🛡️ **焦点防抢夺与单例锁**
+  - 引入 `Qt.WA_ShowWithoutActivating` 属性，计时器变色闪烁时**绝对处于静默状态**，绝不打断您在 Word/PPT 中的打字流。
+  - 工业级 `QSharedMemory` 单例锁，彻底阻止程序多开导致的悬浮条重叠。
+- 💾 **原子化保存与便携模式 (Portable)**
+  - 配置默认保存在程序同级目录，方便打包放进 U 盘带走！具备**权限智能降级**功能，在 C 盘等无权限目录时自动降级保存至 User 目录，杜绝崩溃。
+- ⌨️ **快捷键支持**
+  - 支持自定义全局快捷键（播放/暂停、重置、上一环节、下一环节）。*(注：受系统级安全限制，需鼠标点击激活面板时生效)*
 
 ---
 
 ## 🚀 快速开始
 
-### 1. 下载运行
-https://github.com/Qwejay/QTimer/releases
+### 1. 环境依赖
 
-### 2. 脚本运行
 确保您的电脑已安装 Python 3.7 或更高版本。
+
+安装必须的依赖库 PyQt5：
 ```bash
-# 克隆项目到本地
-git clone https://github.com/Qwejay/QTimer.git
-cd QTimer
-
-# 安装必要的依赖库
 pip install PyQt5
-
-# 运行
-python main.py
-
-## 开源协议
-### GPL-3.0 license
