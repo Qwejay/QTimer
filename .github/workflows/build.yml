@@ -1,75 +1,106 @@
-name: Build and Package QTimer
+name: Build and Release QTimer
 
 on:
-  # 创建 Release 时自动打包并上传 exe
-  release:
-    types: [created]
-
-  # 手动触发
+  push:
+    branches: [ "main", "master" ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ "main", "master" ]
   workflow_dispatch:
-    inputs:
-      version:
-        description: ''
-        required: true
-        default: '1.2'
+
+permissions:
+  contents: write
 
 jobs:
   build:
-    runs-on: windows-latest
-    permissions:
-      contents: write
+    name: Build Windows Executable
+    runs-on: windows-2022
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.9'
+          cache: 'pip'
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install nuitka ordered-set PyQt5
+          pip install pyinstaller PyQt5
 
-      - name: Build with Nuitka
-        shell: cmd
+      - name: Run PyInstaller
+        shell: pwsh
         run: |
-          python -m nuitka ^
-            --standalone ^
-            --onefile ^
-            --windows-console-mode=disable ^
-            --enable-plugin=pyqt5 ^
-            --include-package=PyQt5 ^
-            --windows-icon-from-ico=icon.ico ^
-            --product-name="QTimer" ^
-            --product-version=${{ github.event.release.tag_name || inputs.version || '1.1.0' }} ^
-            --file-description="一款极简风格计时器" ^
-            --copyright="QwejayHuang" ^
-            --output-dir=dist ^
-            --clean-cache=all ^
-            --assume-yes-for-downloads ^
-            --lto=yes ^
-            --remove-output ^
-            --disable-dll-dependency-cache ^
-            QTimer.py
+          $buildParams = @("-F", "-w", "--clean", "--noconfirm", "-n", "QTimer")
+          if (Test-Path "icon.ico") { $buildParams += "--icon=icon.ico" }
+          if (Test-Path "version.txt") { $buildParams += "--version-file=version.txt" }
+          $buildParams += "main.py"
+          & pyinstaller $buildParams
 
-      - name: Upload artifact
+      - name: Prepare Artifacts
+        shell: pwsh
+        run: |
+          # 获取版本号 (Tag 名)
+          $VER = "${{ github.ref_name }}"
+          if ("${{ github.ref_type }}" -ne "tag") { $VER = "dev" }
+          
+          New-Item -ItemType Directory -Force -Path "out"
+          
+          # 使用 ${VER} 这种写法可以绝对避免被下划线干扰
+          $EXE_NAME = "QTimer_${VER}.exe"
+          $ZIP_NAME = "QTimer_${VER}_Portable.zip"
+          
+          # 重命名并移动文件
+          Move-Item "dist/QTimer.exe" "out/$EXE_NAME"
+          
+          # 将 EXE 压缩进 ZIP
+          Compress-Archive -Path "out/$EXE_NAME" -DestinationPath "out/$ZIP_NAME"
+          
+          Write-Host "File created: $EXE_NAME"
+          Write-Host "File created: $ZIP_NAME"
+
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: QTimer-build
-          path: dist/QTimer.exe
+          name: QTimer-Build-Asset
+          path: out/*
+          retention-days: 1
 
-      - name: Upload exe to Release
-        if: github.event_name == 'release'
-        uses: actions/upload-release-asset@v1
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: QTimer-Build-Asset
+          path: ./release_files
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release_files/*.exe
+            release_files/*.zip
+          name: QTimer ${{ github.ref_name }}
+          # 这样写会让 Release 页面非常干净专业
+          body: |
+            ## 🚀 QTimer ${{ github.ref_name }}
+            
+            ### 📦 快速下载
+            - **单文件版**: `QTimer_${{ github.ref_name }}.exe` (直接运行)
+            - **压缩包版**: `QTimer_${{ github.ref_name }}_Portable.zip` (推荐)
+            
+            ---
+            *此版本由 GitHub Actions 自动构建生成。*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: dist/QTimer.exe
-          asset_name: QTimer_${{ github.event.release.tag_name }}.exe
-          asset_content_type: application/octet-stream

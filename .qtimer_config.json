@@ -1,0 +1,50 @@
+{
+  "auto_advance": false,
+  "global_sound": true,
+  "countdown_10s_sound": true,
+  "always_on_top": true,
+  "prevent_offscreen": true,
+  "show_stage_label": true,
+  "ppt_auto_start": true,
+  "double_click_toggle": true,
+  "stages": [
+    {
+      "label": "说课时间",
+      "duration": 5,
+      "unit": "分",
+      "count_up": false
+    },
+    {
+      "label": "答辩时间",
+      "duration": 2,
+      "unit": "分",
+      "count_up": false
+    }
+  ],
+  "alerts": [
+    {
+      "seconds": 30,
+      "color": "#ffaa00",
+      "play_sound": true
+    },
+    {
+      "seconds": 10,
+      "color": "#ff4444",
+      "play_sound": true
+    }
+  ],
+  "color": "#ffffff",
+  "font": "微软雅黑",
+  "font_size": 34,
+  "stage_font": "微软雅黑",
+  "stage_font_size": 26,
+  "bg_color": "#141414",
+  "global_transparency": 0,
+  "bg_transparency": 27,
+  "font_transparency": 0,
+  "shortcut_toggle": "Ctrl+Space",
+  "shortcut_reset": "Ctrl+Return",
+  "shortcut_prev": "Ctrl+Left",
+  "shortcut_next": "Ctrl+Right",
+  "ui_scale": 80
+}
