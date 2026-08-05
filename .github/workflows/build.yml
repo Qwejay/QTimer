@@ -2,10 +2,8 @@ name: Build and Release QTimer
 
 on:
   push:
-    branches: [ "main", "master" ]
-    tags: [ 'v*' ]
-  pull_request:
-    branches: [ "main", "master" ]
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -23,56 +21,68 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
-          cache: 'pip'
+          python-version: '3.11'
 
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller PyQt5
+          pip install PySide6 keyboard pyinstaller
 
       - name: Run PyInstaller
         shell: pwsh
         run: |
-          $buildParams = @("-F", "-w", "--clean", "--noconfirm", "-n", "QTimer")
+          $buildParams = @(
+              "-F",
+              "-w",
+              "--clean",
+              "--noconfirm",
+              "-n", "QTimer"
+          )
           if (Test-Path "icon.ico") { $buildParams += "--icon=icon.ico" }
           if (Test-Path "version.txt") { $buildParams += "--version-file=version.txt" }
           $buildParams += "main.py"
-          & pyinstaller $buildParams
+          & pyinstaller @buildParams
 
       - name: Prepare Artifacts
         shell: pwsh
         run: |
-          # 获取版本号 (Tag 名)
+          # 动态获取当前触发的版本号 (如 v1.3.2)
           $VER = "${{ github.ref_name }}"
-          if ("${{ github.ref_type }}" -ne "tag") { $VER = "dev" }
+          if ("${{ github.ref_type }}" -ne "tag") { 
+              $shortSha = "${{ github.sha }}".Substring(0, 7)
+              $VER = "v-dev-$shortSha" 
+          } elseif (-not $VER.StartsWith("v")) {
+              $VER = "v$VER"
+          }
           
           New-Item -ItemType Directory -Force -Path "out"
           
-          # 使用 ${VER} 这种写法可以绝对避免被下划线干扰
+          # 1. 将 dist/QTimer.exe 重命名为 QTimer_v1.3.2.exe
           $EXE_NAME = "QTimer_${VER}.exe"
-          $ZIP_NAME = "QTimer_${VER}_Portable.zip"
+          Rename-Item -Path "dist/QTimer.exe" -NewName $EXE_NAME
           
-          # 重命名并移动文件
-          Move-Item "dist/QTimer.exe" "out/$EXE_NAME"
+          # 2. 压缩包名称设置为 QTimer_v1.3.2.zip
+          $ZIP_NAME = "QTimer_${VER}.zip"
           
-          # 将 EXE 压缩进 ZIP
-          Compress-Archive -Path "out/$EXE_NAME" -DestinationPath "out/$ZIP_NAME"
+          # 3. 把重命名后的 QTimer_v1.3.2.exe 压缩进 QTimer_v1.3.2.zip
+          Compress-Archive -Path "dist/$EXE_NAME" -DestinationPath "out/$ZIP_NAME"
           
-          Write-Host "File created: $EXE_NAME"
-          Write-Host "File created: $ZIP_NAME"
+          # 生成 SHA256 校验文件
+          Get-FileHash -Path "out/$ZIP_NAME" -Algorithm SHA256 | Out-File -FilePath "out/sha256sum.txt"
+          
+          Write-Host "Files created successfully in ./out:"
+          Get-ChildItem "out"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: QTimer-Build-Asset
           path: out/*
-          retention-days: 1
+          retention-days: 7
 
   release:
     name: Create GitHub Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     
     steps:
@@ -85,20 +95,19 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            release_files/*.exe
-            release_files/*.zip
+          files: release_files/*
           name: QTimer ${{ github.ref_name }}
-          # 这样写会让 Release 页面非常干净专业
           body: |
             ## 🚀 QTimer ${{ github.ref_name }}
             
-            ### 📦 快速下载
-            - **单文件版**: `QTimer_${{ github.ref_name }}.exe` (直接运行)
-            - **压缩包版**: `QTimer_${{ github.ref_name }}_Portable.zip` (推荐)
+            ### 📦 下载链接
+            - **绿色便携包**: `QTimer_${{ github.ref_name }}.zip` 
+            
+            ### 🔒 文件校验 (SHA-256)
+            您可以查阅附件中的 `sha256sum.txt` 校验下载包的完整性。
             
             ---
-            *此版本由 GitHub Actions 自动构建生成。*
+            *此 Release 由 GitHub Actions 自动打包发布。*
           generate_release_notes: true
           draft: false
           prerelease: false
