@@ -746,7 +746,18 @@ class SettingsWindow(QDialog):
     preview_requested = Signal()
     
     _SS = """
-    QDialog { background-color: #f9f9f9; font-family: 'Microsoft YaHei', sans-serif; }
+    QDialog {
+        background-color: #f9f9f9;
+        color: #242424;
+        font-family: 'Microsoft YaHei', sans-serif;
+    }
+
+    /* 所有普通文字默认使用深色，这样即使 Windows 10 本身处于 Dark Mode，QTimer 的设置窗口仍然保持自己设计好的浅色 UI。 */
+    QLabel {
+        color: #242424;
+    }
+
+    /* 左侧导航 */
     QListWidget {
         background: transparent;
         border: none;
@@ -754,6 +765,7 @@ class SettingsWindow(QDialog):
         outline: none;
         padding-top: 15px;
     }
+
     QListWidget::item {
         height: 42px;
         padding-left: 15px;
@@ -763,23 +775,124 @@ class SettingsWindow(QDialog):
         border-radius: 6px;
         margin: 2px 10px;
     }
-    QListWidget::item:hover { background: #f0f0f0; }
+
+    QListWidget::item:hover {
+        background: #f0f0f0;
+    }
+
     QListWidget::item:selected {
         background: #f0f7ff;
         color: #0078d4;
         font-weight: bold;
     }
-    QKeySequenceEdit { 
-        background: #ffffff; 
-        border: 1px solid #d1d1d1; 
-        border-radius: 5px; 
-        padding: 6px 10px; 
-        font-size: 12px; 
-        color: #242424; 
+
+    /* 输入框 */
+    QLineEdit,
+    QSpinBox,
+    QDoubleSpinBox,
+    QKeySequenceEdit,
+    QComboBox {
+        background: #ffffff;
+        color: #242424;
+        selection-background-color: #0078d4;
+        selection-color: #ffffff;
+        border: 1px solid #d1d1d1;
+        border-radius: 5px;
     }
-    QKeySequenceEdit:focus { border-color: #0078d4; }
-    QPushButton { padding: 4px 12px; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
-    QPushButton:hover { background: #f0f0f0; }
+
+    /* ComboBox 下拉列表 */
+    QComboBox QAbstractItemView {
+        background: #ffffff;
+        color: #242424;
+        selection-background-color: #0078d4;
+        selection-color: #ffffff;
+    }
+
+    /* 快捷键输入框 */
+    QKeySequenceEdit {
+        padding: 6px 10px;
+        font-size: 12px;
+    }
+
+    QKeySequenceEdit:focus {
+        border-color: #0078d4;
+    }
+
+    /* 普通按钮 */
+    QPushButton {
+        padding: 4px 12px;
+        border: 1px solid #cccccc;
+        border-radius: 4px;
+        background: #ffffff;
+        color: #242424;
+    }
+
+    QPushButton:hover {
+        background: #f0f0f0;
+    }
+
+    /* 复选框 */
+    QCheckBox {
+        color: #242424;
+    }
+
+    /* 卡片 */
+    QFrame {
+        color: #242424;
+    }
+
+    /* 滚动区域 */
+    QScrollArea {
+        color: #242424;
+    }
+
+    /* 滚动条 */
+    QScrollBar:vertical {
+        background: #f0f0f0;
+        width: 10px;
+        border: none;
+    }
+
+    QScrollBar::handle:vertical {
+        background: #c8c8c8;
+        border-radius: 5px;
+        min-height: 30px;
+    }
+
+    QScrollBar::handle:vertical:hover {
+        background: #aaaaaa;
+    }
+
+    QScrollBar::add-line:vertical,
+    QScrollBar::sub-line:vertical {
+        height: 0px;
+    }
+
+    QScrollBar:horizontal {
+        background: #f0f0f0;
+        height: 10px;
+        border: none;
+    }
+
+    QScrollBar::handle:horizontal {
+        background: #c8c8c8;
+        border-radius: 5px;
+        min-width: 30px;
+    }
+
+    /* 滑块 */
+    QSlider::groove:horizontal {
+        height: 4px;
+        background: #d6d6d6;
+        border-radius: 2px;
+    }
+
+    QSlider::handle:horizontal {
+        width: 16px;
+        margin: -6px 0;
+        background: #0078d4;
+        border-radius: 8px;
+    }
     """
 
     def __init__(self, config: Config, parent=None):
@@ -886,7 +999,14 @@ class SettingsWindow(QDialog):
         vlay.setSpacing(12)
         if title:
             lbl = QLabel(title)
-            lbl.setStyleSheet("font-size: 15px; font-weight: bold; border: none;")
+            # 即使以后有人修改 _SS，卡片标题也不会再次受到系统主题影响。
+            lbl.setStyleSheet(
+                "font-size: 15px; "
+                "font-weight: bold; "
+                "color: #242424; "
+                "background: transparent; "
+                "border: none;"
+            )
             vlay.addWidget(lbl)
         inner = QWidget()
         inner.setStyleSheet("border: none;")
@@ -1073,7 +1193,11 @@ class SettingsWindow(QDialog):
 
     def _styled_label(self, txt: str) -> QLabel:
         lbl = QLabel(txt)
-        lbl.setStyleSheet("font-weight: bold;")
+        lbl.setStyleSheet(
+            "font-weight: bold; "
+            "color: #242424; "
+            "background: transparent;"
+        )
         return lbl
 
     def _create_fast_font_combobox(self, default_font: str) -> QComboBox:
@@ -1126,7 +1250,25 @@ class SettingsWindow(QDialog):
     def _add_stage_row(self, label: str = "新阶段", duration: int = 3, unit: str = "分", count_up: bool = False) -> None:
         row_widget = QWidget()
         row_widget.setObjectName("stageRow")
-        row_widget.setStyleSheet("QWidget#stageRow { background: #ffffff; border: 1px solid #eaeaea; border-radius: 6px; } QWidget#stageRow:hover { border-color: #0078d4; }")
+        row_widget.setStyleSheet("""
+            QWidget#stageRow {
+                background: #ffffff;
+                color: #242424;
+                border: 1px solid #eaeaea;
+                border-radius: 6px;
+            }
+
+            QWidget#stageRow:hover {
+                border-color: #0078d4;
+            }
+
+            QWidget#stageRow QLineEdit,
+            QWidget#stageRow QSpinBox,
+            QWidget#stageRow QComboBox {
+                background: #ffffff;
+                color: #242424;
+            }
+        """)
         h = QHBoxLayout(row_widget)
         h.setContentsMargins(12, 8, 12, 8)
         h.setSpacing(10)
@@ -1162,7 +1304,27 @@ class SettingsWindow(QDialog):
     def _add_alert_row(self, seconds: int = 20, color: str = "#ffaa00", play_sound: bool = True) -> None:
         row_widget = QWidget()
         row_widget.setObjectName("alertRow")
-        row_widget.setStyleSheet("QWidget#alertRow { background: #ffffff; border: 1px solid #eaeaea; border-radius: 6px; } QWidget#alertRow:hover { border-color: #0078d4; }")
+        row_widget.setStyleSheet("""
+            QWidget#alertRow {
+                background: #ffffff;
+                color: #242424;
+                border: 1px solid #eaeaea;
+                border-radius: 6px;
+            }
+
+            QWidget#alertRow:hover {
+                border-color: #0078d4;
+            }
+
+            QWidget#alertRow QSpinBox {
+                background: #ffffff;
+                color: #242424;
+            }
+
+            QWidget#alertRow QCheckBox {
+                color: #242424;
+            }
+        """)
         h = QHBoxLayout(row_widget)
         h.setContentsMargins(12, 8, 12, 8)
         h.setSpacing(10)
