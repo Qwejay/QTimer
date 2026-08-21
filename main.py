@@ -18,7 +18,7 @@ from PySide6.QtGui import *
 from PySide6.QtSvg import QSvgRenderer
 
 __app_name__ = "QTimer"
-__version__ = "1.3.2"
+__version__ = "1.3.3"
 __author__ = "QwejayHuang"
 __company__ = "QwejayHuang"
 __description__ = "一款极简风格计时器"
@@ -51,43 +51,35 @@ def is_ppt_slideshow_active() -> bool:
     if platform.system() != "Windows":
         return False
     try:
+        PPT_CLASSES = {
+            "screenclass", "paneclassdc", "mso_subwindow_class", # MS PowerPoint
+            "kslideshow", "wps_slideshow", "wpp_slideshow_class"   # WPS
+        }
+        
         buf_cls = ctypes.create_unicode_buffer(256)
-        buf_t = ctypes.create_unicode_buffer(512)
         
         def check_hwnd(hwnd: int) -> bool:
             if not ctypes.windll.user32.IsWindowVisible(hwnd):
                 return False
-            
             ctypes.windll.user32.GetClassNameW(hwnd, buf_cls, 256)
             cls = buf_cls.value.lower()
-            
-            if "screenclass" in cls or "slideshow" in cls or "kslideshow" in cls:
-                return True
-                
-            ctypes.windll.user32.GetWindowTextW(hwnd, buf_t, 512)
-            title = buf_t.value.lower()
-            
-            if "幻灯片放映" in title or "slideshow" in title:
-                return True
-                
-            return False
+            return any(p in cls for p in PPT_CLASSES)
 
         fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
         if fg_hwnd and check_hwnd(fg_hwnd):
             return True
 
-        active = False
+        active = [False]
         def enum_cb(hwnd, lparam):
-            nonlocal active
             if check_hwnd(hwnd):
-                active = True
+                active[0] = True
                 return False 
             return True
             
-        cb_func = WNDENUMPROC_TYPE(enum_cb)
-        ctypes.windll.user32.EnumWindows(cb_func, 0)
-        return active
-    except Exception:
+        ctypes.windll.user32.EnumWindows(WNDENUMPROC_TYPE(enum_cb), 0)
+        return active[0]
+    except Exception as e:
+        print(f"PPT检测异常: {e}")
         return False
 
 def play_alert_sound(duration_ms: int = 200) -> None:
@@ -149,7 +141,8 @@ def _render_svg_icon(name: str, size: int, color: str, dpr: float) -> QIcon:
 
 def get_svg_icon(name: str, size: int, color: str = "white") -> QIcon:
     app = QApplication.instance()
-    dpr = app.devicePixelRatio() if app else 1.0
+    widget = app.activeWindow() or (app.topLevelWidgets()[0] if app.topLevelWidgets() else None)
+    dpr = widget.devicePixelRatioF() if widget else 1.0
     return _render_svg_icon(name, size, color, dpr)
 
 @dataclass
@@ -247,23 +240,19 @@ class Config:
             return
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                if not content:
-                    return
-                d = json.loads(content)
-            for key in ("auto_advance", "global_sound", "countdown_10s_sound", "always_on_top",
-                        "prevent_offscreen", "show_stage_label", "ppt_auto_start", "double_click_toggle",
-                        "color", "font", "font_size", "stage_font", "stage_font_size", "bg_color",
-                        "global_transparency", "bg_transparency", "font_transparency", 
-                        "shortcut_toggle", "shortcut_reset", "shortcut_prev", "shortcut_next", "ui_scale"):
-                if key in d:
+                d = json.load(f)
+            if not isinstance(d, dict): return
+            
+            for key in self.__dict__.keys():
+                if key in d and not key.startswith('_'):
                     setattr(self, key, d[key])
+                    
             if "stages" in d:
-                self.stages = [Stage.from_dict(s) for s in d["stages"]]
+                self.stages = [Stage.from_dict(s) for s in d["stages"] if isinstance(s, dict)]
             if "alerts" in d:
-                self.alerts = [Alert.from_dict(a) for a in d["alerts"]]
-        except Exception:
-            pass
+                self.alerts = [Alert.from_dict(a) for a in d["alerts"] if isinstance(a, dict)]
+        except Exception as e:
+            print(f"加载配置失败，将使用默认值: {e}")
 
     def bg_qcolor(self) -> QColor:
         c = QColor(self.bg_color)
@@ -551,16 +540,22 @@ class FloatBar(QWidget):
     def _update_size(self) -> None:
         if hasattr(self, '_anim_group'):
             self._anim_group.stop()
+        
         scale = getattr(self, '_ui_scale', 100) / 100.0
         fm_stage = self.lbl_stage.fontMetrics()
         fm_time = self.lbl_time.fontMetrics()
+        
         text = self._current_stage_text or "环节名称"
-        time_w = fm_time.horizontalAdvance("88:88") + int(20 * scale)
+        time_w = fm_time.horizontalAdvance("88:88") + int(24 * scale)
         self.lbl_time.setFixedWidth(time_w)
-        btn_w = (getattr(self, '_icon_size', 34) + int(2 * scale)) * 6
+        
+        btn_count = 6
+        btn_w = (getattr(self, '_icon_size', 34) + int(2 * scale)) * btn_count
         self._btn_container.setFixedWidth(btn_w)
+        
         base_margin = int(18 * scale)
         stage_spacing = int(12 * scale)
+        
         if self._show_stage_label:
             self.lbl_stage.show()
             self._spacing_item.changeSize(stage_spacing, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -571,20 +566,22 @@ class FloatBar(QWidget):
         else:
             self.lbl_stage.hide()
             self._spacing_item.changeSize(0, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            self.lbl_stage.setFixedWidth(0)
             self._text_width = base_margin + time_w + base_margin
-        self._layout.invalidate()
+
         self._full_width = self._text_width + btn_w + int(16 * scale)
         h = max(self._font_size + int(24 * scale), int(50 * scale))
-        self._canvas.setFixedSize(self._full_width, h)
-        self.setFixedHeight(h)
+        
+        self._canvas.setFixedSize(int(self._full_width), int(h))
+        self.setFixedHeight(int(h))
+        
         if self.underMouse():
-            self.setFixedWidth(self._full_width)
+            self.setFixedWidth(int(self._full_width))
             self._btn_opacity.setOpacity(1.0)
         else:
-            self.setFixedWidth(self._text_width)
+            self.setFixedWidth(int(self._text_width))
             self._btn_opacity.setOpacity(0.0)
-        self._ensure_onscreen()
+            
+        QTimer.singleShot(10, self._ensure_onscreen)
 
     def _ensure_onscreen(self) -> None:
         if not getattr(self, '_prevent_offscreen', True):
@@ -752,12 +749,10 @@ class SettingsWindow(QDialog):
         font-family: 'Microsoft YaHei', sans-serif;
     }
 
-    /* 所有普通文字默认使用深色，这样即使 Windows 10 本身处于 Dark Mode，QTimer 的设置窗口仍然保持自己设计好的浅色 UI。 */
     QLabel {
         color: #242424;
     }
 
-    /* 左侧导航 */
     QListWidget {
         background: transparent;
         border: none;
@@ -786,7 +781,6 @@ class SettingsWindow(QDialog):
         font-weight: bold;
     }
 
-    /* 输入框 */
     QLineEdit,
     QSpinBox,
     QDoubleSpinBox,
@@ -800,7 +794,6 @@ class SettingsWindow(QDialog):
         border-radius: 5px;
     }
 
-    /* ComboBox 下拉列表 */
     QComboBox QAbstractItemView {
         background: #ffffff;
         color: #242424;
@@ -808,7 +801,6 @@ class SettingsWindow(QDialog):
         selection-color: #ffffff;
     }
 
-    /* 快捷键输入框 */
     QKeySequenceEdit {
         padding: 6px 10px;
         font-size: 12px;
@@ -818,7 +810,6 @@ class SettingsWindow(QDialog):
         border-color: #0078d4;
     }
 
-    /* 普通按钮 */
     QPushButton {
         padding: 4px 12px;
         border: 1px solid #cccccc;
@@ -831,22 +822,18 @@ class SettingsWindow(QDialog):
         background: #f0f0f0;
     }
 
-    /* 复选框 */
     QCheckBox {
         color: #242424;
     }
 
-    /* 卡片 */
     QFrame {
         color: #242424;
     }
 
-    /* 滚动区域 */
     QScrollArea {
         color: #242424;
     }
 
-    /* 滚动条 */
     QScrollBar:vertical {
         background: #f0f0f0;
         width: 10px;
@@ -880,7 +867,6 @@ class SettingsWindow(QDialog):
         min-width: 30px;
     }
 
-    /* 滑块 */
     QSlider::groove:horizontal {
         height: 4px;
         background: #d6d6d6;
@@ -893,6 +879,21 @@ class SettingsWindow(QDialog):
         background: #0078d4;
         border-radius: 8px;
     }
+        QDialog { background-color: #f9f9f9; color: #242424; }
+    QLabel { color: #242424; background: transparent; }
+    
+    QLineEdit, QSpinBox, QComboBox, QKeySequenceEdit {
+        background: #ffffff;
+        color: #242424;
+        border: 1px solid #d1d1d1;
+        border-radius: 5px;
+        padding: 4px;
+    }
+    QComboBox::drop-down { border: none; }
+    QComboBox QAbstractItemView { background: #ffffff; color: #242424; }
+    
+    QListWidget::item { color: #444444; }
+    QListWidget::item:selected { color: #0078d4; }
     """
 
     def __init__(self, config: Config, parent=None):
