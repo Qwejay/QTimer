@@ -1,24 +1,23 @@
-import sys
+import copy
+import ctypes
 import json
+import math
 import os
 import platform
-import threading
 import subprocess
+import sys
+import threading
 import time
-import math
-import ctypes
-import copy
-from dataclasses import dataclass, asdict
-from functools import partial, lru_cache
-from typing import Dict, List, Optional
+from dataclasses import asdict, dataclass
+from functools import lru_cache, partial
 
-from PySide6.QtWidgets import *
 from PySide6.QtCore import *
 from PySide6.QtGui import *
 from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtWidgets import *
 
 __app_name__ = "QTimer"
-__version__ = "1.3.3"
+__version__ = "1.4.0"
 __author__ = "QwejayHuang"
 __company__ = "QwejayHuang"
 __description__ = "一款极简风格计时器"
@@ -52,8 +51,8 @@ def is_ppt_slideshow_active() -> bool:
         return False
     try:
         PPT_CLASSES = {
-            "screenclass", "paneclassdc", "mso_subwindow_class", # MS PowerPoint
-            "kslideshow", "wps_slideshow", "wpp_slideshow_class"   # WPS
+            "screenclass", "paneclassdc", "mso_subwindow_class",
+            "kslideshow", "wps_slideshow", "wpp_slideshow_class"
         }
         
         buf_cls = ctypes.create_unicode_buffer(256)
@@ -82,7 +81,27 @@ def is_ppt_slideshow_active() -> bool:
         print(f"PPT检测异常: {e}")
         return False
 
-def play_alert_sound(duration_ms: int = 200) -> None:
+def play_alert_sound(file_path: str = "", duration_ms: int = 200) -> None:
+    if file_path and os.path.exists(file_path):
+        sys_name = platform.system()
+        if sys_name == "Windows":
+            def _play_win():
+                try:
+                    import winsound
+                    winsound.PlaySound(file_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+                except Exception:
+                    pass
+            threading.Thread(target=_play_win, daemon=True).start()
+            return
+        elif sys_name == "Darwin":
+            def _play_mac():
+                try:
+                    subprocess.call(['afplay', file_path])
+                except Exception:
+                    pass
+            threading.Thread(target=_play_mac, daemon=True).start()
+            return
+
     sys_name = platform.system()
     if sys_name == "Windows":
         def _beep():
@@ -91,16 +110,14 @@ def play_alert_sound(duration_ms: int = 200) -> None:
                 winsound.Beep(1500, duration_ms)
             except Exception:
                 pass
-        t = threading.Thread(target=_beep, daemon=True)
-        t.start()
+        threading.Thread(target=_beep, daemon=True).start()
     elif sys_name == "Darwin":
         def _mac_beep():
             try:
                 subprocess.call(['afplay', '/System/Library/Sounds/Glass.aiff'])
             except Exception:
                 pass
-        t = threading.Thread(target=_mac_beep, daemon=True)
-        t.start()
+        threading.Thread(target=_mac_beep, daemon=True).start()
     else:
         QApplication.beep()
 
@@ -108,7 +125,7 @@ def get_rgba_color(hex_color: str, alpha_pct: int) -> str:
     col = QColor(hex_color)
     return f"rgba({col.red()}, {col.green()}, {col.blue()}, {alpha_pct / 100:.2f})"
 
-SVG_ICONS: Dict[str, str] = {
+SVG_ICONS: dict[str, str] = {
     "play":     '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><polygon points="6,4 20,12 6,20" fill="{color}"/></svg>',
     "pause":    '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="5" y="4" width="4" height="16" rx="1" fill="{color}"/><rect x="15" y="4" width="4" height="16" rx="1" fill="{color}"/></svg>',
     "restart":  '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z" fill="{color}"/></svg>',
@@ -128,8 +145,7 @@ def _render_svg_icon(name: str, size: int, color: str, dpr: float) -> QIcon:
         return QIcon()
     renderer = QSvgRenderer(svg_str.encode("utf-8"))
     physical_size = int(size * dpr)
-    if physical_size < 1:
-        physical_size = 1
+    physical_size = max(physical_size, 1)
     pixmap = QPixmap(physical_size, physical_size)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
@@ -177,13 +193,17 @@ class Config:
         self.auto_advance: bool = False
         self.global_sound: bool = True
         self.countdown_10s_sound: bool = True
+        self.alert_sound_path: str = ""
+        self.end_sound_path: str = ""
+        self.pos_x: int = -1
+        self.pos_y: int = -1
         self.always_on_top: bool = True
         self.prevent_offscreen: bool = True
         self.show_stage_label: bool = True
         self.ppt_auto_start: bool = True
         self.double_click_toggle: bool = True
-        self.stages: List[Stage] = [Stage("说课时间", 5, "分", False), Stage("答辩时间", 2, "分", False)]
-        self.alerts: List[Alert] = [Alert(30, "#ffaa00", True), Alert(10, "#ff4444", True)]
+        self.stages: list[Stage] = [Stage("说课时间", 5, "分", False), Stage("答辩时间", 2, "分", False)]
+        self.alerts: list[Alert] = [Alert(30, "#ffaa00", True), Alert(10, "#ff4444", True)]
         self.color: str = "#ffffff"
         self.font: str = "微软雅黑"
         self.font_size: int = 32
@@ -204,6 +224,10 @@ class Config:
             "auto_advance": self.auto_advance,
             "global_sound": self.global_sound,
             "countdown_10s_sound": self.countdown_10s_sound,
+            "alert_sound_path": self.alert_sound_path,
+            "end_sound_path": self.end_sound_path,
+            "pos_x": self.pos_x,
+            "pos_y": self.pos_y,
             "always_on_top": self.always_on_top,
             "prevent_offscreen": self.prevent_offscreen,
             "show_stage_label": self.show_stage_label,
@@ -257,7 +281,10 @@ class Config:
     def bg_qcolor(self) -> QColor:
         c = QColor(self.bg_color)
         opacity_pct = max(0, min(100, 100 - self.bg_transparency))
-        c.setAlpha(int(opacity_pct / 100 * 255))
+        alpha = int(opacity_pct / 100 * 255)
+        if self.bg_transparency == 100:
+            alpha = 1
+        c.setAlpha(alpha)
         return c
 
 class TimerController(QObject):
@@ -347,18 +374,18 @@ class TimerController(QObject):
             self.tick.emit(st.label, display_sec)
             if self.config.global_sound:
                 if self.config.countdown_10s_sound and 0 < rem_sec <= 10:
-                    play_alert_sound(200)
+                    play_alert_sound(self.config.alert_sound_path, 200)
                 for a in self.config.alerts:
                     if rem_sec == a.seconds and a.seconds not in self._triggered:
                         self._triggered.add(a.seconds)
                         self.alert_triggered.emit(a.color)
                         if a.play_sound:
-                            play_alert_sound(200)
+                            play_alert_sound(self.config.alert_sound_path, 200)
         if self._remaining_float <= 0 and not self._zero_triggered:
             self._zero_triggered = True
             self._remaining_float = 0.0
             if self.config.global_sound:
-                play_alert_sound(2000)
+                play_alert_sound(self.config.end_sound_path, 2000)
             if self.config.auto_advance:
                 self._advance_idx()
                 self._load_stage()
@@ -379,6 +406,7 @@ class FloatBar(QWidget):
     request_exit = Signal()
     double_clicked = Signal()
     wheel_scrolled = Signal(int)
+    position_changed = Signal(int, int) 
 
     def __init__(self):
         super().__init__()
@@ -439,14 +467,17 @@ class FloatBar(QWidget):
         self._layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._layout.setContentsMargins(18, 0, 0, 0)
         self._layout.setSpacing(0)
+        
         self.lbl_stage = QLabel("环节名称")
         self.lbl_stage.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_time = QLabel("00:00")
         self.lbl_time.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._layout.addWidget(self.lbl_stage)
+        
+        self._layout.addWidget(self.lbl_stage, 0, Qt.AlignmentFlag.AlignVCenter)
         self._spacing_item = QSpacerItem(12, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._layout.addItem(self._spacing_item)
-        self._layout.addWidget(self.lbl_time)
+        self._layout.addWidget(self.lbl_time, 0, Qt.AlignmentFlag.AlignVCenter)
+        
         self._end_spacing_item = QSpacerItem(18, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._layout.addItem(self._end_spacing_item)
         self._btn_container = QWidget()
@@ -463,9 +494,21 @@ class FloatBar(QWidget):
             btn_lay.addWidget(b)
         self._btn_container.setGraphicsEffect(self._btn_opacity)
         self._btn_opacity.setOpacity(0.0)
-        self._layout.addWidget(self._btn_container)
+        self._layout.addWidget(self._btn_container, 0, Qt.AlignmentFlag.AlignVCenter)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_ctx_menu)
+        
+        shadow_stage = QGraphicsDropShadowEffect(self)
+        shadow_stage.setBlurRadius(4)
+        shadow_stage.setColor(QColor(0, 0, 0, 180))
+        shadow_stage.setOffset(1, 1)
+        self.lbl_stage.setGraphicsEffect(shadow_stage)
+
+        shadow_time = QGraphicsDropShadowEffect(self)
+        shadow_time.setBlurRadius(4)
+        shadow_time.setColor(QColor(0, 0, 0, 180))
+        shadow_time.setOffset(1, 1)
+        self.lbl_time.setGraphicsEffect(shadow_time)
 
     def _make_icon_btn(self, icon_name: str, tip: str) -> QPushButton:
         b = QPushButton()
@@ -522,7 +565,7 @@ class FloatBar(QWidget):
         self._update_size()
         self.update()
 
-    def _refresh_labels(self, stage_color: Optional[str] = None, time_color: Optional[str] = None) -> None:
+    def _refresh_labels(self, stage_color: str = None, time_color: str = None) -> None:
         sc = stage_color or self._text_color
         tc = time_color or self._text_color
         opacity_pct = max(0, min(100, 100 - self._font_transparency))
@@ -530,10 +573,10 @@ class FloatBar(QWidget):
         rgba_tc = get_rgba_color(tc, opacity_pct)
         self.lbl_stage.setStyleSheet(
             f"color:{rgba_sc}; font-family:'{self._stage_font_family}'; "
-            f"font-size:{self._stage_font_size}px; font-weight:600; background:transparent;")
+            f"font-size:{self._stage_font_size}px; font-weight:600; background:transparent; padding:0px; margin:0px;")
         self.lbl_time.setStyleSheet(
             f"color:{rgba_tc}; font-family:'{self._font_family}'; "
-            f"font-size:{self._font_size}px; font-weight:900; background:transparent;")
+            f"font-size:{self._font_size}px; font-weight:900; background:transparent; padding:0px; margin:0px;")
         self.lbl_stage.style().polish(self.lbl_stage)
         self.lbl_time.style().polish(self.lbl_time)
 
@@ -546,7 +589,8 @@ class FloatBar(QWidget):
         fm_time = self.lbl_time.fontMetrics()
         
         text = self._current_stage_text or "环节名称"
-        time_w = fm_time.horizontalAdvance("88:88") + int(24 * scale)
+        sample_text = "88:88:88" if len(self.lbl_time.text()) > 5 else "88:88"
+        time_w = fm_time.horizontalAdvance(sample_text) + int(24 * scale)
         self.lbl_time.setFixedWidth(time_w)
         
         btn_count = 6
@@ -570,6 +614,8 @@ class FloatBar(QWidget):
 
         self._full_width = self._text_width + btn_w + int(16 * scale)
         h = max(self._font_size + int(24 * scale), int(50 * scale))
+        self.lbl_stage.setFixedHeight(int(h))
+        self.lbl_time.setFixedHeight(int(h))
         
         self._canvas.setFixedSize(int(self._full_width), int(h))
         self.setFixedHeight(int(h))
@@ -597,11 +643,20 @@ class FloatBar(QWidget):
             self.move(new_x, new_y)
 
     def update_display(self, stage: str, display_sec: int) -> None:
-        mm, ss = divmod(display_sec, 60)
-        if self._current_stage_text != stage:
+        if display_sec >= 3600:
+            hh, rem = divmod(display_sec, 3600)
+            mm, ss = divmod(rem, 60)
+            time_text = f"{hh:02d}:{mm:02d}:{ss:02d}"
+        else:
+            mm, ss = divmod(display_sec, 60)
+            time_text = f"{mm:02d}:{ss:02d}"
+            
+        if self._current_stage_text != stage or (len(time_text) != len(self.lbl_time.text())):
             self._current_stage_text = stage
+            self.lbl_time.setText(time_text)
             self._update_size()
-        self.lbl_time.setText(f"{mm:02d}:{ss:02d}")
+        else:
+            self.lbl_time.setText(time_text)
 
     def set_running(self, running: bool) -> None:
         self._is_running = running
@@ -619,7 +674,7 @@ class FloatBar(QWidget):
 
     def stop_flash(self) -> None:
         self._flash_timer.stop()
-        self._refresh_labels()
+        self._refresh_labels(stage_color=self._flash_color, time_color=self._flash_color)
 
     def _do_flash(self) -> None:
         self._flash_state = not self._flash_state
@@ -698,9 +753,11 @@ class FloatBar(QWidget):
         if self._drag_pos and e.buttons() == Qt.MouseButton.LeftButton:
             new_pos = e.globalPosition().toPoint() - self._drag_pos
             if self._prevent_offscreen:
-                screen = self.screen().availableGeometry()
+                screen_obj = QApplication.screenAt(e.globalPosition().toPoint())
+                screen = screen_obj.availableGeometry() if screen_obj else self.screen().availableGeometry()
                 new_x = new_pos.x()
                 new_y = new_pos.y()
+
                 snap_margin = 15
                 if abs(new_x - screen.left()) < snap_margin:
                     new_x = screen.left()
@@ -720,6 +777,7 @@ class FloatBar(QWidget):
         self._drag_pos = None
         QToolTip.hideText()
         self._ensure_onscreen()
+        self.position_changed.emit(self.x(), self.y())
 
     def moveEvent(self, e: QMoveEvent) -> None:
         super().moveEvent(e)
@@ -867,6 +925,10 @@ class SettingsWindow(QDialog):
         min-width: 30px;
     }
 
+    QSlider:horizontal {
+        min-height: 26px;
+    }
+
     QSlider::groove:horizontal {
         height: 4px;
         background: #d6d6d6;
@@ -875,25 +937,15 @@ class SettingsWindow(QDialog):
 
     QSlider::handle:horizontal {
         width: 16px;
+        height: 16px;
         margin: -6px 0;
         background: #0078d4;
         border-radius: 8px;
     }
-        QDialog { background-color: #f9f9f9; color: #242424; }
-    QLabel { color: #242424; background: transparent; }
-    
-    QLineEdit, QSpinBox, QComboBox, QKeySequenceEdit {
-        background: #ffffff;
-        color: #242424;
-        border: 1px solid #d1d1d1;
-        border-radius: 5px;
-        padding: 4px;
+
+    QSlider::handle:horizontal:hover {
+        background: #005a9e;
     }
-    QComboBox::drop-down { border: none; }
-    QComboBox QAbstractItemView { background: #ffffff; color: #242424; }
-    
-    QListWidget::item { color: #444444; }
-    QListWidget::item:selected { color: #0078d4; }
     """
 
     def __init__(self, config: Config, parent=None):
@@ -901,6 +953,8 @@ class SettingsWindow(QDialog):
         self.config = config
         self._backup_attrs = {
             "color": config.color, "bg_color": config.bg_color,
+            "alert_sound_path": config.alert_sound_path,
+            "end_sound_path": config.end_sound_path,
             "font": config.font, "font_size": config.font_size,
             "stage_font": config.stage_font, "stage_font_size": config.stage_font_size,
             "always_on_top": config.always_on_top, "prevent_offscreen": config.prevent_offscreen,
@@ -948,7 +1002,7 @@ class SettingsWindow(QDialog):
         bottom_bar = QWidget()
         btn_lay = QHBoxLayout(bottom_bar)
         btn_lay.setContentsMargins(0, 0, 0, 0)
-        lbl_copyright = QLabel(f'<a href="https://github.com/Qwejay/QTimer" style="color: #999; text-decoration: none;">Copyright © 2026 QwejayHuang</a>')
+        lbl_copyright = QLabel('<a href="https://github.com/Qwejay/QTimer" style="color: #999; text-decoration: none;">Copyright © 2026 QwejayHuang</a>')
         lbl_copyright.setOpenExternalLinks(True)
         lbl_copyright.setStyleSheet("font-size: 11px;")
         btn_lay.addWidget(lbl_copyright)
@@ -1000,7 +1054,6 @@ class SettingsWindow(QDialog):
         vlay.setSpacing(12)
         if title:
             lbl = QLabel(title)
-            # 即使以后有人修改 _SS，卡片标题也不会再次受到系统主题影响。
             lbl.setStyleSheet(
                 "font-size: 15px; "
                 "font-weight: bold; "
@@ -1014,6 +1067,44 @@ class SettingsWindow(QDialog):
         inner.setLayout(layout)
         vlay.addWidget(inner)
         return card
+
+    def _make_sound_picker_row(self, title: str, line_edit: QLineEdit, default_duration: int = 200) -> QWidget:
+        w = QWidget()
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        
+        lbl = QLabel(title)
+        lbl.setStyleSheet("font-weight: bold; color: #333;")
+        lbl.setFixedWidth(90)
+        lay.addWidget(lbl)
+        
+        line_edit.setMinimumWidth(160)
+        lay.addWidget(line_edit, 1)
+        
+        btn_browse = QPushButton("浏览...")
+        btn_browse.setCursor(Qt.CursorShape.PointingHandCursor)
+        def _on_browse():
+            ext = "*.wav *.mp3 *.aiff" if platform.system() == "Darwin" else "*.wav"
+            path, _ = QFileDialog.getOpenFileName(self, f"选择{title}文件", "", f"音频文件 ({ext});;所有文件 (*.*)")
+            if path:
+                line_edit.setText(path)
+
+        btn_browse.clicked.connect(_on_browse)
+        lay.addWidget(btn_browse)
+        
+        btn_test = QPushButton("试听")
+        btn_test.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_test.clicked.connect(lambda: play_alert_sound(line_edit.text().strip(), default_duration))
+        lay.addWidget(btn_test)
+        
+        btn_clear = QPushButton("重置")
+        btn_clear.setToolTip("重置为默认蜂鸣")
+        btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_clear.clicked.connect(lambda: line_edit.clear())
+        lay.addWidget(btn_clear)
+        
+        return w
 
     def _build_page_stages(self) -> QWidget:
         scroll = QScrollArea()
@@ -1063,13 +1154,26 @@ class SettingsWindow(QDialog):
         lay = QVBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(12)
+        
         self.switch_global_sound = QCheckBox()
         self.switch_10s_sound = QCheckBox()
         snd_lay = QVBoxLayout()
         snd_lay.setSpacing(12)
-        snd_lay.addWidget(self._make_setting_row("启用所有提示音", "全局控制蜂鸣器的发声许可", self.switch_global_sound))
-        snd_lay.addWidget(self._make_setting_row("临近结束敲击音", "在倒计时最后10秒时，每秒触发一次微弱滴答声", self.switch_10s_sound))
+        snd_lay.addWidget(self._make_setting_row("启用所有提示音", "全局控制蜂鸣与音频的播放许可", self.switch_global_sound))
+        snd_lay.addWidget(self._make_setting_row("临近结束敲击音", "在倒计时最后10秒时，每秒触发一次提示", self.switch_10s_sound))
+        
+        self.txt_alert_sound = QLineEdit()
+        self.txt_alert_sound.setReadOnly(True)
+        self.txt_alert_sound.setPlaceholderText("系统默认蜂鸣音")
+        snd_lay.addWidget(self._make_sound_picker_row("节点预警音效", self.txt_alert_sound, default_duration=200))
+        
+        self.txt_end_sound = QLineEdit()
+        self.txt_end_sound.setReadOnly(True)
+        self.txt_end_sound.setPlaceholderText("系统默认长蜂鸣")
+        snd_lay.addWidget(self._make_sound_picker_row("环节结束音效", self.txt_end_sound, default_duration=2000))
+        
         lay.addWidget(self._make_card("声音反馈", snd_lay))
+        
         list_lay = QVBoxLayout()
         list_lay.setSpacing(10)
         self._alert_container = QWidget()
@@ -1113,7 +1217,7 @@ class SettingsWindow(QDialog):
         self._op_slider = QSlider(Qt.Orientation.Horizontal)
         self._op_slider.setRange(0, 70)  
         self._bg_op_slider = QSlider(Qt.Orientation.Horizontal)
-        self._bg_op_slider.setRange(0, 60)  
+        self._bg_op_slider.setRange(0, 100)
         self._font_trans_slider = QSlider(Qt.Orientation.Horizontal)
         self._font_trans_slider.setRange(0, 100) 
         c_lay.addWidget(QLabel("数字/文字颜色:"), 0, 0)
@@ -1227,6 +1331,8 @@ class SettingsWindow(QDialog):
             self._add_stage_row()
         self.switch_global_sound.setChecked(self.config.global_sound)
         self.switch_10s_sound.setChecked(self.config.countdown_10s_sound)
+        self.txt_alert_sound.setText(self.config.alert_sound_path)
+        self.txt_end_sound.setText(self.config.end_sound_path)
         for a in self.config.alerts:
             self._add_alert_row(a.seconds, a.color, a.play_sound)
         self.switch_always_on_top.setChecked(self.config.always_on_top)
@@ -1503,6 +1609,8 @@ class SettingsWindow(QDialog):
         self.config.double_click_toggle = self.switch_double_click.isChecked()
         self.config.global_sound = self.switch_global_sound.isChecked()
         self.config.countdown_10s_sound = self.switch_10s_sound.isChecked()
+        self.config.alert_sound_path = self.txt_alert_sound.text().strip()
+        self.config.end_sound_path = self.txt_end_sound.text().strip()
         self.config.always_on_top = self.switch_always_on_top.isChecked()
         self.config.prevent_offscreen = self.switch_prevent_offscreen.isChecked()
         self.config.stages = [Stage(r["name"].text(), r["spin"].value(), r["unit_cmb"].currentText(), r["dir_cmb"].currentText() == "正计时") for r in self._stage_rows]
@@ -1556,8 +1664,13 @@ class App(QObject):
         self._apply_style()
         self._apply_shortcuts()
         self.controller.stop()
-        screen = self.float_bar.screen().availableGeometry()
-        self.float_bar.move(screen.left() + 40, screen.top() + 40)
+        
+        if self.config.pos_x >= 0 and self.config.pos_y >= 0:
+            self.float_bar.move(self.config.pos_x, self.config.pos_y)
+        else:
+            screen = self.float_bar.screen().availableGeometry()
+            self.float_bar.move(screen.left() + 40, screen.top() + 40)
+            
         self.float_bar.show()
 
     def _check_ppt_status(self) -> None:
@@ -1605,10 +1718,16 @@ class App(QObject):
         fb.request_exit.connect(self._exit)
         fb.double_clicked.connect(self._on_double_clicked)
         fb.wheel_scrolled.connect(self._on_wheel_scrolled)
+        fb.position_changed.connect(self._on_position_changed)
         ctrl.tick.connect(lambda lbl, rem: fb.update_display(lbl, rem))
         ctrl.alert_triggered.connect(lambda c: fb.start_flash(c, 3000))
         ctrl.loop_restarted.connect(lambda: fb.start_flash(self.config.color, 1500))
         ctrl.state_changed.connect(fb.set_running)
+
+    def _on_position_changed(self, x: int, y: int) -> None:
+        self.config.pos_x = x
+        self.config.pos_y = y
+        self._save_timer.start(500)
 
     def _on_wheel_scrolled(self, delta: int) -> None:
         new_scale = max(50, min(300, self.config.ui_scale + delta))
@@ -1646,7 +1765,7 @@ class App(QObject):
                     k_str = key_str.lower().replace("return", "enter")
                     try:
                         keyboard.add_hotkey(k_str, signal.emit, suppress=False)
-                    except Exception as e:
+                    except Exception:
                         pass
         else:
             mapping_qt = [
