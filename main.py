@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from ctypes import wintypes
 from dataclasses import asdict, dataclass
 from functools import lru_cache, partial
 
@@ -17,7 +18,7 @@ from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import *
 
 __app_name__ = "QTimer"
-__version__ = "1.4.0"
+__version__ = "1.6.0"
 __author__ = "QwejayHuang"
 __company__ = "QwejayHuang"
 __description__ = "一款极简风格计时器"
@@ -44,42 +45,245 @@ def get_config_path() -> str:
     return os.path.join(loc, "config.json")
 
 CONFIG_PATH = get_config_path()
-WNDENUMPROC_TYPE = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+# ============================================================
+# PPT / WPS 全屏放映检测
+# ============================================================
+
+WNDENUMPROC_TYPE = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+PPT_SLIDESHOW_CLASSES = {
+    "screenclass", "paneclassdc", "mso_subwindow_class",
+    "kslideshow", "wps_slideshow", "wpp_slideshow_class",
+}
+PPT_SLIDESHOW_PROCESSES = {"powerpnt.exe", "pptview.exe", "wpp.exe", "wps.exe"}
+PPT_SLIDESHOW_TITLE_HINTS = ("slide show", "slideshow", "幻灯片放映", "放映")
+
+_process_name_cache: dict = {}
+_PROCESS_NAME_CACHE_TTL = 5.0
+_PROCESS_NAME_CACHE_MAX = 256
+
+
+class _RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", wintypes.LONG),
+        ("top", wintypes.LONG),
+        ("right", wintypes.LONG),
+        ("bottom", wintypes.LONG),
+    ]
+
+
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", _RECT),
+        ("rcWork", _RECT),
+        ("dwFlags", wintypes.DWORD),
+    ]
+
+
+def _get_window_title(hwnd) -> str:
+    try:
+        user32 = ctypes.windll.user32
+        user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+        user32.GetWindowTextLengthW.restype = ctypes.c_int
+        user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        user32.GetWindowTextW.restype = ctypes.c_int
+
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return ""
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        return buf.value or ""
+    except Exception:
+        return ""
+
+
+def _is_slideshow_title(title: str) -> bool:
+    low = (title or "").lower()
+    return any(hint in low for hint in PPT_SLIDESHOW_TITLE_HINTS)
+
+
+def get_window_process_name(hwnd) -> str:
+    """返回窗口所属进程的可执行文件名（小写），失败返回 None。
+
+    按 hwnd 缓存 5 秒，但缓存同时记录 pid 并每次命中校验：
+    窗口销毁后 hwnd 可能被系统立即复用，只比 hwnd 会把上一个窗口的进程名
+    串给新窗口，导致最长 5 秒的误判（漏判或误判为放映）。
+    """
+    now = time.monotonic()
+
+    pid = 0
+    try:
+        user32 = ctypes.windll.user32
+        user32.GetWindowThreadProcessId.argtypes = [
+            wintypes.HWND, ctypes.POINTER(wintypes.DWORD)
+        ]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        pid_buf = wintypes.DWORD(0)
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid_buf))
+        pid = pid_buf.value
+    except Exception:
+        pid = 0
+
+    cached = _process_name_cache.get(hwnd)
+    if (
+        cached is not None
+        and now - cached[0] < _PROCESS_NAME_CACHE_TTL
+        and cached[1] == pid
+    ):
+        return cached[2]
+
+    name = None
+    if pid:
+        handle = None
+        try:
+            kernel32 = ctypes.windll.kernel32
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.QueryFullProcessImageNameW.argtypes = [
+                wintypes.HANDLE, wintypes.DWORD,
+                wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
+            ]
+            kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel32.CloseHandle.restype = wintypes.BOOL
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+            )
+            if handle:
+                buf = ctypes.create_unicode_buffer(1024)
+                size = wintypes.DWORD(len(buf))
+                if kernel32.QueryFullProcessImageNameW(
+                    handle, 0, buf, ctypes.byref(size)
+                ):
+                    name = buf.value.rsplit("\\", 1)[-1].lower()
+        except Exception:
+            name = None
+        finally:
+            if handle:
+                try:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                except Exception:
+                    pass
+
+    if len(_process_name_cache) >= _PROCESS_NAME_CACHE_MAX:
+        _process_name_cache.clear()
+    _process_name_cache[hwnd] = (now, pid, name)
+    return name
+
+
+def is_window_fullscreen(hwnd) -> bool:
+    """窗口矩形 ≈ 所在显示器矩形（容差 4px），且排除最大化状态。"""
+    try:
+        user32 = ctypes.windll.user32
+        user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(_RECT)]
+        user32.GetWindowRect.restype = wintypes.BOOL
+        user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+        user32.MonitorFromWindow.restype = wintypes.HANDLE
+        user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_MONITORINFO)]
+        user32.GetMonitorInfoW.restype = wintypes.BOOL
+        user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.GetWindowLongW.restype = wintypes.LONG
+
+        GWL_STYLE = -16
+        WS_MAXIMIZE = 0x01000000
+        if user32.GetWindowLongW(hwnd, GWL_STYLE) & WS_MAXIMIZE:
+            return False
+
+        rect = _RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return False
+
+        MONITOR_DEFAULTTONEAREST = 2
+        monitor = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+        if not monitor:
+            return False
+
+        info = _MONITORINFO()
+        info.cbSize = ctypes.sizeof(_MONITORINFO)
+        if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return False
+
+        tol = 4
+        mon = info.rcMonitor
+        return (
+            abs(rect.left - mon.left) <= tol
+            and abs(rect.top - mon.top) <= tol
+            and abs(rect.right - mon.right) <= tol
+            and abs(rect.bottom - mon.bottom) <= tol
+        )
+    except Exception:
+        return False
+
 
 def is_ppt_slideshow_active() -> bool:
+    """检测 PowerPoint / WPS 是否正在全屏放映。
+
+    三重判定：
+      1) 类名命中放映专用类名（PowerPoint 旧版 / 部分 WPS 版本）
+      2) 进程名属于放映进程，且窗口标题含放映关键词
+      3) 进程名属于放映进程，且窗口为真全屏
+         （覆盖新版 WPS：wpp.exe / Qt5QWindowIcon / 标题无关键词）
+    进程名读不到（权限受限）时退化为「放映标题 + 真全屏」。
+    """
     if platform.system() != "Windows":
         return False
     try:
-        PPT_CLASSES = {
-            "screenclass", "paneclassdc", "mso_subwindow_class",
-            "kslideshow", "wps_slideshow", "wpp_slideshow_class"
-        }
-        
-        buf_cls = ctypes.create_unicode_buffer(256)
-        
-        def check_hwnd(hwnd: int) -> bool:
-            if not ctypes.windll.user32.IsWindowVisible(hwnd):
-                return False
-            ctypes.windll.user32.GetClassNameW(hwnd, buf_cls, 256)
-            cls = buf_cls.value.lower()
-            return any(p in cls for p in PPT_CLASSES)
+        user32 = ctypes.windll.user32
+        user32.EnumWindows.argtypes = [WNDENUMPROC_TYPE, wintypes.LPARAM]
+        user32.EnumWindows.restype = wintypes.BOOL
+        user32.IsWindowVisible.argtypes = [wintypes.HWND]
+        user32.IsWindowVisible.restype = wintypes.BOOL
+        user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        user32.GetClassNameW.restype = ctypes.c_int
+    except Exception as e:
+        print(f"PPT检测初始化异常: {e}")
+        return False
 
-        fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
+    found = []
+
+    def check_hwnd(hwnd) -> bool:
+        if not hwnd or not user32.IsWindowVisible(hwnd):
+            return False
+
+        buf = ctypes.create_unicode_buffer(256)
+        if not user32.GetClassNameW(hwnd, buf, 256):
+            return False
+        class_name = (buf.value or "").lower()
+
+        if class_name in PPT_SLIDESHOW_CLASSES:
+            return True
+
+        process_name = get_window_process_name(hwnd)
+        title = _get_window_title(hwnd)
+
+        if process_name in PPT_SLIDESHOW_PROCESSES:
+            return _is_slideshow_title(title) or is_window_fullscreen(hwnd)
+        if process_name is None:
+            return _is_slideshow_title(title) and is_window_fullscreen(hwnd)
+        return False
+
+    try:
+        fg_hwnd = user32.GetForegroundWindow()
         if fg_hwnd and check_hwnd(fg_hwnd):
             return True
 
-        active = [False]
         def enum_cb(hwnd, lparam):
             if check_hwnd(hwnd):
-                active[0] = True
-                return False 
+                found.append(hwnd)
+                return False
             return True
-            
-        ctypes.windll.user32.EnumWindows(WNDENUMPROC_TYPE(enum_cb), 0)
-        return active[0]
+
+        user32.EnumWindows(WNDENUMPROC_TYPE(enum_cb), 0)
     except Exception as e:
         print(f"PPT检测异常: {e}")
         return False
+
+    return bool(found)
 
 def play_alert_sound(file_path: str = "", duration_ms: int = 200) -> None:
     if file_path and os.path.exists(file_path):
@@ -193,6 +397,8 @@ class Config:
         self.auto_advance: bool = False
         self.global_sound: bool = True
         self.countdown_10s_sound: bool = True
+        self.countdown_beep_seconds: int = 10
+        self.suspend_hotkeys_in_slideshow: bool = True
         self.alert_sound_path: str = ""
         self.end_sound_path: str = ""
         self.pos_x: int = -1
@@ -224,6 +430,8 @@ class Config:
             "auto_advance": self.auto_advance,
             "global_sound": self.global_sound,
             "countdown_10s_sound": self.countdown_10s_sound,
+            "countdown_beep_seconds": self.countdown_beep_seconds,
+            "suspend_hotkeys_in_slideshow": self.suspend_hotkeys_in_slideshow,
             "alert_sound_path": self.alert_sound_path,
             "end_sound_path": self.end_sound_path,
             "pos_x": self.pos_x,
@@ -275,6 +483,12 @@ class Config:
                 self.stages = [Stage.from_dict(s) for s in d["stages"] if isinstance(s, dict)]
             if "alerts" in d:
                 self.alerts = [Alert.from_dict(a) for a in d["alerts"] if isinstance(a, dict)]
+
+            try:
+                self.countdown_beep_seconds = max(1, min(300, int(self.countdown_beep_seconds)))
+            except (TypeError, ValueError):
+                self.countdown_beep_seconds = 10
+            self.suspend_hotkeys_in_slideshow = bool(self.suspend_hotkeys_in_slideshow)
         except Exception as e:
             print(f"加载配置失败，将使用默认值: {e}")
 
@@ -373,7 +587,11 @@ class TimerController(QObject):
             display_sec = max(0, st.seconds - rem_sec) if st.count_up else rem_sec
             self.tick.emit(st.label, display_sec)
             if self.config.global_sound:
-                if self.config.countdown_10s_sound and 0 < rem_sec <= 10:
+                try:
+                    beep_secs = max(1, int(self.config.countdown_beep_seconds))
+                except (TypeError, ValueError):
+                    beep_secs = 10
+                if self.config.countdown_10s_sound and 0 < rem_sec <= beep_secs:
                     play_alert_sound(self.config.alert_sound_path, 200)
                 for a in self.config.alerts:
                     if rem_sec == a.seconds and a.seconds not in self._triggered:
@@ -410,7 +628,11 @@ class FloatBar(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+        )
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
@@ -961,6 +1183,8 @@ class SettingsWindow(QDialog):
             "show_stage_label": config.show_stage_label, "auto_advance": config.auto_advance,
             "ppt_auto_start": config.ppt_auto_start, "double_click_toggle": config.double_click_toggle,
             "global_sound": config.global_sound, "countdown_10s_sound": config.countdown_10s_sound,
+            "countdown_beep_seconds": config.countdown_beep_seconds,
+            "suspend_hotkeys_in_slideshow": config.suspend_hotkeys_in_slideshow,
             "global_transparency": config.global_transparency, "bg_transparency": config.bg_transparency,
             "font_transparency": config.font_transparency,
             "shortcut_toggle": config.shortcut_toggle, "shortcut_reset": config.shortcut_reset,
@@ -1040,6 +1264,7 @@ class SettingsWindow(QDialog):
         if subtitle:
             lbl_sub = QLabel(subtitle)
             lbl_sub.setStyleSheet("color: #777; font-size: 11px;")
+            lbl_sub.setWordWrap(True)
             text_lay.addWidget(lbl_sub)
         lay.addLayout(text_lay)
         lay.addStretch()
@@ -1121,11 +1346,17 @@ class SettingsWindow(QDialog):
         self.switch_auto_advance = QCheckBox()
         self.switch_ppt_auto_start = QCheckBox()
         self.switch_double_click = QCheckBox()
+        self.switch_suspend_hotkeys = QCheckBox()
         behav_lay = QVBoxLayout()
         behav_lay.setSpacing(12)
         behav_lay.addWidget(self._make_setting_row("显示环节名称", "在主悬浮球中同步显示各小节文本标题", self.switch_show_label))
         behav_lay.addWidget(self._make_setting_row("自动连播", "环节到期时自动切换下个任务并继续倒数", self.switch_auto_advance))
-        behav_lay.addWidget(self._make_setting_row("PPT放映联动", "当检测到幻灯片全屏放映时，自动开始计时", self.switch_ppt_auto_start))
+        behav_lay.addWidget(self._make_setting_row("PPT放映联动", "检测到幻灯片全屏放映时自动开始计时，退出放映自动暂停（支持 PowerPoint / WPS）", self.switch_ppt_auto_start))
+        behav_lay.addWidget(self._make_setting_row(
+            "放映时暂停全局热键",
+            "放映开始临时移除键盘钩子、退出放映自动恢复，遥控翻页笔更稳定；"
+            "若你需要放映中用快捷键控制计时，请关闭此项",
+            self.switch_suspend_hotkeys))
         behav_lay.addWidget(self._make_setting_row("双击快捷操作", "双击悬浮窗空白区域快速进行开始/暂停", self.switch_double_click))
         lay.addWidget(self._make_card("行为习惯", behav_lay))
         list_lay = QVBoxLayout()
@@ -1160,8 +1391,16 @@ class SettingsWindow(QDialog):
         snd_lay = QVBoxLayout()
         snd_lay.setSpacing(12)
         snd_lay.addWidget(self._make_setting_row("启用所有提示音", "全局控制蜂鸣与音频的播放许可", self.switch_global_sound))
-        snd_lay.addWidget(self._make_setting_row("临近结束敲击音", "在倒计时最后10秒时，每秒触发一次提示", self.switch_10s_sound))
-        
+        snd_lay.addWidget(self._make_setting_row("临近结束敲击音", "倒计时进入尾段时，每秒触发一次提示", self.switch_10s_sound))
+
+        self.spin_beep_seconds = QSpinBox()
+        self.spin_beep_seconds.setRange(1, 300)
+        self.spin_beep_seconds.setSuffix(" 秒")
+        self.spin_beep_seconds.setValue(10)
+        self.spin_beep_seconds.setMinimumWidth(90)
+        snd_lay.addWidget(self._make_setting_row("敲击起始节点", "剩余多少秒开始每秒敲击提示", self.spin_beep_seconds))
+        self.switch_10s_sound.toggled.connect(self.spin_beep_seconds.setEnabled)
+
         self.txt_alert_sound = QLineEdit()
         self.txt_alert_sound.setReadOnly(True)
         self.txt_alert_sound.setPlaceholderText("系统默认蜂鸣音")
@@ -1324,6 +1563,7 @@ class SettingsWindow(QDialog):
         self.switch_auto_advance.setChecked(self.config.auto_advance)
         self.switch_show_label.setChecked(self.config.show_stage_label)
         self.switch_ppt_auto_start.setChecked(self.config.ppt_auto_start)
+        self.switch_suspend_hotkeys.setChecked(self.config.suspend_hotkeys_in_slideshow)
         self.switch_double_click.setChecked(self.config.double_click_toggle)
         for s in self.config.stages:
             self._add_stage_row(s.label, s.duration, s.unit, s.count_up)
@@ -1331,6 +1571,11 @@ class SettingsWindow(QDialog):
             self._add_stage_row()
         self.switch_global_sound.setChecked(self.config.global_sound)
         self.switch_10s_sound.setChecked(self.config.countdown_10s_sound)
+        try:
+            self.spin_beep_seconds.setValue(int(self.config.countdown_beep_seconds))
+        except (TypeError, ValueError):
+            self.spin_beep_seconds.setValue(10)
+        self.spin_beep_seconds.setEnabled(self.switch_10s_sound.isChecked())
         self.txt_alert_sound.setText(self.config.alert_sound_path)
         self.txt_end_sound.setText(self.config.end_sound_path)
         for a in self.config.alerts:
@@ -1534,7 +1779,9 @@ class SettingsWindow(QDialog):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self.config = Config()
+            defaults = Config()
+            for k, v in vars(defaults).items():
+                setattr(self.config, k, copy.deepcopy(v))
             for row in list(self._stage_rows):
                 if row.get("widget"): row["widget"].deleteLater()
             self._stage_rows.clear()
@@ -1606,9 +1853,11 @@ class SettingsWindow(QDialog):
         self.config.auto_advance = self.switch_auto_advance.isChecked()
         self.config.show_stage_label = self.switch_show_label.isChecked()
         self.config.ppt_auto_start = self.switch_ppt_auto_start.isChecked()
+        self.config.suspend_hotkeys_in_slideshow = self.switch_suspend_hotkeys.isChecked()
         self.config.double_click_toggle = self.switch_double_click.isChecked()
         self.config.global_sound = self.switch_global_sound.isChecked()
         self.config.countdown_10s_sound = self.switch_10s_sound.isChecked()
+        self.config.countdown_beep_seconds = int(self.spin_beep_seconds.value())
         self.config.alert_sound_path = self.txt_alert_sound.text().strip()
         self.config.end_sound_path = self.txt_end_sound.text().strip()
         self.config.always_on_top = self.switch_always_on_top.isChecked()
@@ -1654,6 +1903,8 @@ class App(QObject):
         self._ppt_was_active = False
         self._ppt_stable_active_count = 0
         self._current_ppt_session_paused_by_user = False
+        self._hotkey_handles = []
+        self._hotkeys_suspended = False
         self._ppt_monitor_timer = QTimer(self)
         self._ppt_monitor_timer.timeout.connect(self._check_ppt_status)
         self._ppt_monitor_timer.start(600)
@@ -1673,28 +1924,57 @@ class App(QObject):
             
         self.float_bar.show()
 
-    def _check_ppt_status(self) -> None:
+    def _ppt_watch_enabled(self) -> bool:
+        """只要开了「放映联动」或「放映时暂停热键」，就需要轮询放映状态。"""
+        return bool(self.config.ppt_auto_start or self.config.suspend_hotkeys_in_slideshow)
+
+    def _resume_timer_for_slideshow(self) -> None:
+        """放映进行中：若计时处于暂停且非用户主动暂停，则自动开始/恢复。
+
+        注意：本方法只应在「进入放映」这一边沿调用一次，
+        不可放在轮询的稳态分支里，否则用户在放映中手动暂停后会被立即拉起。
+        """
         if not self.config.ppt_auto_start:
             return
-        is_active = is_ppt_slideshow_active()
-        if is_active:
-            self._ppt_stable_active_count += 1
-            if self._ppt_stable_active_count >= 2 and not self._ppt_was_active:
-                self._ppt_was_active = True
-                self._current_ppt_session_paused_by_user = False
-                if self.controller.paused and self.controller._remaining_float > 0:
-                    self.controller.toggle_pause()
-            elif self._ppt_stable_active_count >= 2:
-                if self.controller.paused and self.controller._remaining_float > 0:
-                    if not self._current_ppt_session_paused_by_user:
-                        self.controller.toggle_pause()
-        else:
+        if self._current_ppt_session_paused_by_user:
+            return
+        if self.controller.paused and self.controller._remaining_float > 0:
+            self.controller.toggle_pause()
+
+    def _check_ppt_status(self) -> None:
+        if not self._ppt_watch_enabled():
             self._ppt_stable_active_count = 0
-            if self._ppt_was_active:
-                self._ppt_was_active = False
-                self._current_ppt_session_paused_by_user = False
-                if not self.controller.paused:
-                    self.controller.toggle_pause()
+            self._ppt_was_active = False
+            self._current_ppt_session_paused_by_user = False
+            self._sync_hotkeys_with_slideshow(False)
+            return
+
+        try:
+            is_active = is_ppt_slideshow_active()
+        except Exception as e:
+            print(f"PPT检测异常: {e}")
+            is_active = False
+
+        if is_active == self._ppt_was_active:
+            self._ppt_stable_active_count = 0
+            return
+
+        self._ppt_stable_active_count += 1
+        if self._ppt_stable_active_count < 2:
+            return
+
+        self._ppt_stable_active_count = 0
+        self._ppt_was_active = is_active
+
+        if is_active:
+            self._current_ppt_session_paused_by_user = False
+            self._resume_timer_for_slideshow()
+        else:
+            if self.config.ppt_auto_start and not self.controller.paused:
+                self.controller.toggle_pause()
+            self._current_ppt_session_paused_by_user = False
+
+        self._sync_hotkeys_with_slideshow(is_active)
 
     def _on_user_interaction(self):
         if is_ppt_slideshow_active():
@@ -1747,39 +2027,82 @@ class App(QObject):
                                    opacity_float, c.bg_qcolor(), c.always_on_top, c.show_stage_label, 
                                    c.prevent_offscreen, c.font_transparency, c.ui_scale)
 
+    def _remove_global_hotkeys(self) -> None:
+        """精确释放本程序注册的热键句柄，不使用键盘模块的全局 unhook。"""
+        if HAS_KEYBOARD:
+            for handle in self._hotkey_handles:
+                try:
+                    keyboard.remove_hotkey(handle)
+                except Exception:
+                    pass
+        self._hotkey_handles.clear()
+
+    def _clear_hotkeys(self) -> None:
+        self._remove_global_hotkeys()
+        self._hotkeys_suspended = False
+
+    def _install_global_hotkeys(self) -> None:
+        self._remove_global_hotkeys()
+        if not HAS_KEYBOARD:
+            return
+        mapping = [
+            (self.config.shortcut_toggle, self.hotkey_bridge.toggle),
+            (self.config.shortcut_reset, self.hotkey_bridge.reset),
+            (self.config.shortcut_prev, self.hotkey_bridge.prev),
+            (self.config.shortcut_next, self.hotkey_bridge.next),
+        ]
+        for key_str, signal in mapping:
+            if not key_str:
+                continue
+            k_str = key_str.lower().replace("return", "enter")
+            try:
+                handle = keyboard.add_hotkey(k_str, signal.emit, suppress=False)
+                self._hotkey_handles.append(handle)
+            except Exception:
+                pass
+
+    def _set_global_hotkeys_enabled(self, enabled: bool) -> None:
+        if enabled:
+            if self._hotkeys_suspended:
+                self._install_global_hotkeys()
+                self._hotkeys_suspended = False
+        else:
+            if not self._hotkeys_suspended:
+                self._remove_global_hotkeys()
+                self._hotkeys_suspended = True
+
+    def _sync_hotkeys_with_slideshow(self, slideshow_active: bool) -> None:
+        """放映期间挂起全局热键，退出放映恢复；用户可关闭该行为。"""
+        if not getattr(self.config, "suspend_hotkeys_in_slideshow", True):
+            if self._hotkeys_suspended:
+                self._set_global_hotkeys_enabled(True)
+            return
+        self._set_global_hotkeys_enabled(not slideshow_active)
+
     def _apply_shortcuts(self) -> None:
         for sc in self._shortcuts:
             sc.setEnabled(False)
             sc.deleteLater()
         self._shortcuts.clear()
+
         if HAS_KEYBOARD:
-            keyboard.unhook_all()
-            mapping = [
-                (self.config.shortcut_toggle, self.hotkey_bridge.toggle),
-                (self.config.shortcut_reset, self.hotkey_bridge.reset),
-                (self.config.shortcut_prev, self.hotkey_bridge.prev),
-                (self.config.shortcut_next, self.hotkey_bridge.next),
-            ]
-            for key_str, signal in mapping:
-                if key_str:
-                    k_str = key_str.lower().replace("return", "enter")
-                    try:
-                        keyboard.add_hotkey(k_str, signal.emit, suppress=False)
-                    except Exception:
-                        pass
-        else:
-            mapping_qt = [
-                (self.config.shortcut_toggle, self.controller.toggle_pause),
-                (self.config.shortcut_reset, self.controller.restart_stage),
-                (self.config.shortcut_prev, self.controller.prev_stage),
-                (self.config.shortcut_next, self.controller.next_stage),
-            ]
-            for key_str, slot_func in mapping_qt:
-                if key_str:
-                    sc = QShortcut(QKeySequence(key_str), self.float_bar)
-                    sc.setContext(Qt.ShortcutContext.ApplicationShortcut)
-                    sc.activated.connect(slot_func)
-                    self._shortcuts.append(sc)
+            self._hotkeys_suspended = False
+            self._install_global_hotkeys()
+            return
+
+        self._remove_global_hotkeys()
+        mapping_qt = [
+            (self.config.shortcut_toggle, self.controller.toggle_pause),
+            (self.config.shortcut_reset, self.controller.restart_stage),
+            (self.config.shortcut_prev, self.controller.prev_stage),
+            (self.config.shortcut_next, self.controller.next_stage),
+        ]
+        for key_str, slot_func in mapping_qt:
+            if key_str:
+                sc = QShortcut(QKeySequence(key_str), self.float_bar)
+                sc.setContext(Qt.ShortcutContext.ApplicationShortcut)
+                sc.activated.connect(slot_func)
+                self._shortcuts.append(sc)
 
     def _open_settings(self) -> None:
         dlg = SettingsWindow(self.config)
@@ -1800,12 +2123,14 @@ class App(QObject):
         self._apply_shortcuts()
         self.controller.config = self.config
         self.controller.stop()
+        self._sync_hotkeys_with_slideshow(self._ppt_was_active)
+        if self._ppt_was_active:
+            self._resume_timer_for_slideshow()
 
     def _exit(self) -> None:
         self.controller.stop()
         self._ppt_monitor_timer.stop()
-        if HAS_KEYBOARD:
-            keyboard.unhook_all()
+        self._clear_hotkeys()
         for sc in self._shortcuts:
             sc.setEnabled(False)
             sc.deleteLater()
