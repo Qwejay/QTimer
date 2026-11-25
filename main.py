@@ -18,7 +18,7 @@ from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import *
 
 __app_name__ = "QTimer"
-__version__ = "1.6.0"
+__version__ = "1.6.1"
 __author__ = "QwejayHuang"
 __company__ = "QwejayHuang"
 __description__ = "一款极简风格计时器"
@@ -398,7 +398,9 @@ class Config:
         self.global_sound: bool = True
         self.countdown_10s_sound: bool = True
         self.countdown_beep_seconds: int = 10
-        self.suspend_hotkeys_in_slideshow: bool = True
+        # 放映期间默认保留全局热键，避免重置/暂停快捷键被程序主动注销。
+        self.suspend_hotkeys_in_slideshow: bool = False
+        self.config_version: int = 2
         self.alert_sound_path: str = ""
         self.end_sound_path: str = ""
         self.pos_x: int = -1
@@ -432,6 +434,7 @@ class Config:
             "countdown_10s_sound": self.countdown_10s_sound,
             "countdown_beep_seconds": self.countdown_beep_seconds,
             "suspend_hotkeys_in_slideshow": self.suspend_hotkeys_in_slideshow,
+            "config_version": 2,
             "alert_sound_path": self.alert_sound_path,
             "end_sound_path": self.end_sound_path,
             "pos_x": self.pos_x,
@@ -475,10 +478,21 @@ class Config:
                 d = json.load(f)
             if not isinstance(d, dict): return
             
+            try:
+                saved_config_version = int(d.get("config_version", 0))
+            except (TypeError, ValueError):
+                saved_config_version = 0
+
             for key in self.__dict__.keys():
                 if key in d and not key.startswith('_'):
                     setattr(self, key, d[key])
-                    
+
+            # 旧版本默认在 PPT 放映时注销全局热键。升级后迁移为默认保留，
+            # 用户仍可在设置中主动开启“放映时暂停全局热键”。
+            if saved_config_version < 2:
+                self.suspend_hotkeys_in_slideshow = False
+            self.config_version = 2
+
             if "stages" in d:
                 self.stages = [Stage.from_dict(s) for s in d["stages"] if isinstance(s, dict)]
             if "alerts" in d:
@@ -649,6 +663,7 @@ class FloatBar(QWidget):
         self._font_transparency = 0
         self._target_opacity = 0.95
         self._global_transparency = 5
+        self._always_on_top = True
         self._ui_scale = 100
         self._icon_size = 34
         self._is_running = False
@@ -747,6 +762,7 @@ class FloatBar(QWidget):
         self._stage_font_family = stage_font
         self._bg_color = bg_color
         self._show_stage_label = show_stage_label
+        self._always_on_top = bool(always_on_top)
         self._prevent_offscreen = prevent_offscreen
         self._font_transparency = font_transparency
         self._ui_scale = ui_scale
@@ -786,6 +802,29 @@ class FloatBar(QWidget):
         self._refresh_labels()
         self._update_size()
         self.update()
+
+    def ensure_native_topmost(self) -> bool:
+        """在 PPT 全屏期间恢复 Windows 原生置顶层级，不抢占键盘焦点。"""
+        if (platform.system() != "Windows" or not self._always_on_top
+                or not self.isVisible()):
+            return False
+        try:
+            user32 = ctypes.windll.user32
+            user32.SetWindowPos.argtypes = [
+                wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                ctypes.c_int, ctypes.c_int, wintypes.UINT
+            ]
+            user32.SetWindowPos.restype = wintypes.BOOL
+            hwnd = wintypes.HWND(int(self.winId()))
+            hwnd_topmost = wintypes.HWND(-1)
+            # SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER
+            flags = 0x0001 | 0x0002 | 0x0010 | 0x0200
+            return bool(user32.SetWindowPos(
+                hwnd, hwnd_topmost, 0, 0, 0, 0, flags
+            ))
+        except Exception as exc:
+            print(f"恢复悬浮窗置顶状态失败: {exc}")
+            return False
 
     def _refresh_labels(self, stage_color: str = None, time_color: str = None) -> None:
         sc = stage_color or self._text_color
@@ -1354,8 +1393,7 @@ class SettingsWindow(QDialog):
         behav_lay.addWidget(self._make_setting_row("PPT放映联动", "检测到幻灯片全屏放映时自动开始计时，退出放映自动暂停（支持 PowerPoint / WPS）", self.switch_ppt_auto_start))
         behav_lay.addWidget(self._make_setting_row(
             "放映时暂停全局热键",
-            "放映开始临时移除键盘钩子、退出放映自动恢复，遥控翻页笔更稳定；"
-            "若你需要放映中用快捷键控制计时，请关闭此项",
+            "默认关闭。开启后，PPT 放映期间会暂停计时器全局快捷键，适合需要避免与翻页器冲突的场景",
             self.switch_suspend_hotkeys))
         behav_lay.addWidget(self._make_setting_row("双击快捷操作", "双击悬浮窗空白区域快速进行开始/暂停", self.switch_double_click))
         lay.addWidget(self._make_card("行为习惯", behav_lay))
@@ -1514,7 +1552,7 @@ class SettingsWindow(QDialog):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
-        txt = "点击下方输入框后在键盘上直接按下组合键即可。\n如环境已安装keyboard模块，热键将支持在PPT全屏等失去焦点时盲操。"
+        txt = "点击下方输入框后在键盘上直接按下组合键即可。\n放映期间默认保留全局快捷键，可直接重置、暂停或切换计时环节。"
         help_banner = QLabel(txt)
         help_banner.setStyleSheet("color: #005a9e; background-color: #f0f7ff; border: 1px solid #cce3f5; border-radius: 6px; padding: 12px; font-size: 12px; line-height: 1.4;")
         lay.addWidget(help_banner)
@@ -1897,9 +1935,9 @@ class App(QObject):
         self._shortcuts = []
         self.hotkey_bridge = HotkeyBridge()
         self.hotkey_bridge.toggle.connect(self.controller.toggle_pause)
-        self.hotkey_bridge.reset.connect(self.controller.restart_stage)
-        self.hotkey_bridge.prev.connect(self.controller.prev_stage)
-        self.hotkey_bridge.next.connect(self.controller.next_stage)
+        self.hotkey_bridge.reset.connect(self._hotkey_reset_stage)
+        self.hotkey_bridge.prev.connect(self._hotkey_prev_stage)
+        self.hotkey_bridge.next.connect(self._hotkey_next_stage)
         self._ppt_was_active = False
         self._ppt_stable_active_count = 0
         self._current_ppt_session_paused_by_user = False
@@ -1923,10 +1961,15 @@ class App(QObject):
             self.float_bar.move(screen.left() + 40, screen.top() + 40)
             
         self.float_bar.show()
+        QTimer.singleShot(0, self.float_bar.ensure_native_topmost)
 
     def _ppt_watch_enabled(self) -> bool:
-        """只要开了「放映联动」或「放映时暂停热键」，就需要轮询放映状态。"""
-        return bool(self.config.ppt_auto_start or self.config.suspend_hotkeys_in_slideshow)
+        """放映联动、热键管理或置顶维护启用时，持续检测 PPT 放映状态。"""
+        return bool(
+            self.config.ppt_auto_start
+            or self.config.suspend_hotkeys_in_slideshow
+            or self.config.always_on_top
+        )
 
     def _resume_timer_for_slideshow(self) -> None:
         """放映进行中：若计时处于暂停且非用户主动暂停，则自动开始/恢复。
@@ -1954,6 +1997,11 @@ class App(QObject):
         except Exception as e:
             print(f"PPT检测异常: {e}")
             is_active = False
+
+        # 不只在进入放映时设置一次：Windows 桌面/壁纸切换可能改变窗口 Z 序，
+        # 因此在放映稳态期间周期性将悬浮窗重新放回 TOPMOST 层，且不激活窗口。
+        if is_active and self.config.always_on_top:
+            self.float_bar.ensure_native_topmost()
 
         if is_active == self._ppt_was_active:
             self._ppt_stable_active_count = 0
@@ -2058,8 +2106,8 @@ class App(QObject):
             try:
                 handle = keyboard.add_hotkey(k_str, signal.emit, suppress=False)
                 self._hotkey_handles.append(handle)
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"注册全局快捷键失败 ({key_str}): {exc}")
 
     def _set_global_hotkeys_enabled(self, enabled: bool) -> None:
         if enabled:
@@ -2073,7 +2121,7 @@ class App(QObject):
 
     def _sync_hotkeys_with_slideshow(self, slideshow_active: bool) -> None:
         """放映期间挂起全局热键，退出放映恢复；用户可关闭该行为。"""
-        if not getattr(self.config, "suspend_hotkeys_in_slideshow", True):
+        if not getattr(self.config, "suspend_hotkeys_in_slideshow", False):
             if self._hotkeys_suspended:
                 self._set_global_hotkeys_enabled(True)
             return
@@ -2138,10 +2186,23 @@ class App(QObject):
         QApplication.quit()
 
     def _on_stage_reset(self) -> None:
+        """重置或切换环节后，在 PPT 放映中按联动设置自动继续计时。"""
         self._current_ppt_session_paused_by_user = False
         if is_ppt_slideshow_active() and self.config.ppt_auto_start:
             if self.controller.paused and self.controller._remaining_float > 0:
                 self.controller.toggle_pause()
+
+    def _hotkey_reset_stage(self) -> None:
+        self.controller.restart_stage()
+        self._on_stage_reset()
+
+    def _hotkey_prev_stage(self) -> None:
+        self.controller.prev_stage()
+        self._on_stage_reset()
+
+    def _hotkey_next_stage(self) -> None:
+        self.controller.next_stage()
+        self._on_stage_reset()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
